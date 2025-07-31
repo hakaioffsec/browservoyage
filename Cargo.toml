@@ -1,0 +1,42 @@
+[package]
+name = "browservoyage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+windows = { version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authentication_Identity",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_UI",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Shell",
+    "Win32_System_LibraryLoader",
+    "Wdk_System_SystemServices",
+] }
+aes = "0.8"
+aes-gcm = "0.10.3"
+cbc = "0.1"
+chacha20poly1305 = "0.10.1"
+des = "0.8.1"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.141"
+base64 = "0.22.1"
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+hex = "0.4.3"
+thiserror = "2.0.12"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+color-eyre = "0.6.5"
+asn1-rs = "0.7.1"
+pbkdf2 = "0.12.2"
+hmac = "0.12.1"
+sha1 = "0.10.6"
+sha2 = "0.10.9"
+directories = "5.0"
