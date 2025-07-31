@@ -1,10 +1,11 @@
 # BrowserVoyage - Browser Data Extractor (Rust)
 
-A comprehensive, modular browser data extraction tool that can decrypt and extract cookies and saved passwords from multiple browsers across different platforms. Currently supports Chrome on Windows and Firefox across all platforms.
+A comprehensive, modular browser data extraction tool that can decrypt and extract cookies and saved passwords from multiple browsers across different platforms. Currently supports Chrome on Windows, Firefox across all platforms, and Safari on macOS.
 
 ## Features
 
 ### Chrome Support
+
 - Decrypts Chrome cookies and saved passwords on Windows
 - Supports encryption versions v10, v11, and v20
 - Supports Chrome 127+ (flag 1: AES-256-GCM), 133+ (flag 2: ChaCha20-Poly1305), and 137+ (flag 3: AES-256-GCM with CNG)
@@ -13,6 +14,7 @@ A comprehensive, modular browser data extraction tool that can decrypt and extra
 - Extracts credentials from Login Data database
 
 ### Firefox Support
+
 - Extracts and decrypts saved passwords from logins.json
 - Extracts cookies from cookies.sqlite
 - Supports multiple Firefox profiles
@@ -20,7 +22,14 @@ A comprehensive, modular browser data extraction tool that can decrypt and extra
 - Uses ASN.1 PBE decryption for master key extraction
 - Supports 3DES and AES-256-CBC decryption algorithms
 
+### Safari Support
+
+- Extracts cookies from Safari's binary cookies format on macOS
+- Reads from `~/Library/Safari/Cookies/Cookies.binarycookies`
+- **Important**: Requires Full Disk Access permissions (see Requirements)
+
 ### General Features
+
 - Robust LSASS/winlogon impersonation for SYSTEM-level DPAPI access
 - Comprehensive error handling with detailed error types
 - Structured logging with tracing
@@ -28,9 +37,21 @@ A comprehensive, modular browser data extraction tool that can decrypt and extra
 
 ## Requirements
 
+### Windows
+
 - **Administrator privileges** - The tool must be run as administrator
-- Windows operating system
 - Chrome browser installed with v20 cookies
+
+### macOS
+
+- **Full Disk Access** - Required for Safari data extraction
+  - Grant access to your terminal application (Terminal.app, iTerm2, or your IDE)
+  - Go to System Settings > Privacy & Security > Full Disk Access
+  - Add your terminal application to the list and enable it
+
+### All Platforms
+
+- Firefox installations are supported without special permissions
 
 ## Building
 
@@ -62,6 +83,7 @@ set RUST_LOG=browservoyage=debug
 ```
 
 The tool will:
+
 1. Check for administrator privileges
 2. Read Chrome's Local State file to get the encrypted key
 3. Decrypt the key using SYSTEM and user DPAPI
@@ -73,6 +95,7 @@ The tool will:
 ## Output
 
 The tool outputs decrypted cookies in the format:
+
 ```
 <host_key> <cookie_name> <cookie_value>
 ```
@@ -82,11 +105,13 @@ The tool outputs decrypted cookies in the format:
 ### Chrome Technical Details
 
 #### Encryption Flags
+
 - **Flag 1** (Chrome 127+): Uses AES-256-GCM with a hardcoded key
 - **Flag 2** (Chrome 133+): Uses ChaCha20-Poly1305 with a hardcoded key
 - **Flag 3** (Chrome 137+): Uses AES-256-GCM with a key decrypted via CNG and XORed with a hardcoded key
 
 #### Key Derivation Process
+
 1. Extract `app_bound_encrypted_key` from Local State
 2. Remove "APPB" prefix
 3. Decrypt with SYSTEM DPAPI (requires LSASS impersonation)
@@ -97,6 +122,7 @@ The tool outputs decrypted cookies in the format:
 ### Firefox Technical Details
 
 #### Master Key Extraction
+
 1. Query `key4.db` for metadata and NSS private key data
 2. Validate password-check and key integrity
 3. Use ASN.1 PBE decryption with the appropriate algorithm:
@@ -105,6 +131,7 @@ The tool outputs decrypted cookies in the format:
    - LoginPBE: 3DES-CBC with direct key usage
 
 #### Data Extraction
+
 - **Cookies**: Read from `cookies.sqlite` database
 - **Passwords**: Read from `logins.json` and decrypt using the master key
 
@@ -113,6 +140,7 @@ The tool outputs decrypted cookies in the format:
 The project follows a modular architecture designed for easy extension:
 
 ### Module Structure
+
 ```
 src/
 ├── browser_extractor.rs   # Core trait definitions
@@ -137,6 +165,7 @@ src/
 To add support for a new browser or platform:
 
 1. **For a new platform of an existing browser** (e.g., Chrome on Linux):
+
    - Add a new file in the browser's module (e.g., `chrome/linux.rs`)
    - Implement the `BrowserExtractor` trait
    - Update the module's `mod.rs` to conditionally export based on platform
@@ -149,10 +178,10 @@ To add support for a new browser or platform:
 ### Platform Support Matrix
 
 | Browser | Windows | Linux | macOS |
-|---------|---------|-------|-------|
+| ------- | ------- | ----- | ----- |
 | Chrome  | ✅      | 🔲    | 🔲    |
 | Firefox | ✅      | ✅    | ✅    |
-| Safari  | N/A     | N/A   | 🔲    |
+| Safari  | N/A     | N/A   | ✅    |
 
 ✅ = Implemented, 🔲 = Planned
 
@@ -174,6 +203,7 @@ To add support for a new browser or platform:
 - `hex` - Hex decoding
 - `asn1-rs` - ASN.1 parsing for Firefox key extraction
 - `pbkdf2`, `hmac`, `sha1`, `sha2` - Cryptographic primitives for key derivation
+- `binary-cookies` - Safari binary cookies format parser
 - `thiserror` - Derive macro for custom error types
 - `tracing` & `tracing-subscriber` - Structured logging
 - `color-eyre` - Beautiful error reporting

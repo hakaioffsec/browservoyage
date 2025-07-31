@@ -4,6 +4,9 @@ mod chrome;
 mod error;
 mod gecko;
 
+#[cfg(target_os = "macos")]
+mod webkit;
+
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -14,10 +17,10 @@ use tracing::{error, info};
 use ::windows::Win32::UI::Shell::IsUserAnAdmin;
 
 use crate::browser_factory::BrowserFactory;
-use crate::error::BrowserVoyageError;
 use std::fs;
 use std::path::Path;
 
+#[cfg(target_os = "windows")]
 fn is_admin() -> bool {
     #[cfg(target_os = "windows")]
     {
@@ -47,7 +50,7 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     if !is_admin() {
         error!("This script needs to run as administrator on Windows.");
-        return Err(BrowserVoyageError::AccessDenied(
+        return Err(crate::error::BrowserVoyageError::AccessDenied(
             "Administrator privileges required on Windows".into(),
         )
         .into());

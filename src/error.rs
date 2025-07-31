@@ -14,6 +14,7 @@ pub enum BrowserVoyageError {
     #[error("I/O error: {0}")]
     StdIo(#[from] std::io::Error),
 
+    #[cfg(target_os = "windows")]
     #[error("Windows error: {0}")]
     Windows(String),
 
@@ -59,6 +60,7 @@ impl BrowserVoyageError {
 }
 
 // Helper function to convert Windows errors
+#[cfg(target_os = "windows")]
 pub fn convert_windows_error(error: windows::core::Error) -> BrowserVoyageError {
     let code = error.code().0;
 
