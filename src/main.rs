@@ -17,7 +17,7 @@ fn is_admin() -> bool {
 
     #[cfg(not(target_os = "windows"))]
     {
-        // On non-Windows platforms, we don't require admin for Firefox
+        // On non-Windows platforms, we don't require admin
         false
     }
 }
