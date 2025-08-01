@@ -49,6 +49,9 @@ pub enum BrowserVoyageError {
     #[error("Environment variable error: {0}")]
     EnvError(#[from] std::env::VarError),
 
+    #[error("CSV error: {0}")]
+    CsvError(String),
+
     #[error(transparent)]
     Other(#[from] color_eyre::eyre::Error),
 }
