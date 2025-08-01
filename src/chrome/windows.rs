@@ -330,6 +330,57 @@ impl WindowsChromeExtractor {
         }
     }
 
+    /// Helper function to handle binary data in cookies by encoding as base64 when UTF-8 conversion fails
+    fn handle_binary_data(&self, data: Vec<u8>) -> BrowserVoyageResult<String> {
+        match String::from_utf8(data.clone()) {
+            Ok(s) => Ok(s),
+            Err(_) => {
+                debug!("Cookie contains binary data, encoding as base64");
+                Ok(BASE64.encode(&data))
+            }
+        }
+    }
+
+    /// Try v20 cookie decryption using Chrome's complex key derivation (app_bound_encrypted_key)
+    fn try_v20_fallback_decryption(
+        &self,
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> BrowserVoyageResult<Option<String>> {
+        debug!(
+            "Trying v20 decryption with Chrome's complex key derivation for {}",
+            self.browser_name
+        );
+
+        let alt_key = self.get_app_bound_key_for_v20()?;
+        debug!(
+            "Attempting v20 decryption with app_bound key ({} bytes)",
+            alt_key.len()
+        );
+
+        if alt_key.len() == 32 {
+            let alt_cipher = Aes256Gcm::new_from_slice(&alt_key)
+                .map_err(|e| BrowserVoyageError::InvalidKeyLength(format!("{e:?}")))?;
+            let nonce = Nonce::from_slice(nonce);
+
+            if let Ok(result) = alt_cipher.decrypt(nonce, ciphertext) {
+                debug!("v20 decryption successful with app_bound key");
+                return Ok(Some(self.handle_binary_data(result)?));
+            } else {
+                debug!("v20 decryption failed with app_bound key");
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Decrypt Chromium encrypted values (cookies and passwords)
+    ///
+    /// Handles different encryption versions (v10, v11, v20) and browser-specific logic:
+    /// - Edge/Brave: Uses simple AES-GCM decryption, with fallback to Chrome's complex key derivation for v20 cookies
+    /// - Chrome: Uses AES-GCM with domain hash validation for cookies
+    ///
+    /// Gracefully handles binary cookie data by encoding as base64 when UTF-8 conversion fails.
     #[instrument(skip(encrypted_value, master_key))]
     fn decrypt_chromium_value(
         &self,
@@ -337,25 +388,15 @@ impl WindowsChromeExtractor {
         master_key: &[u8],
         host_key: Option<&str>,
     ) -> BrowserVoyageResult<String> {
-        debug!(
-            "decrypt_chromium_value for {}: encrypted_value len={}, master_key len={}, host_key={:?}",
-            self.browser_name,
-            encrypted_value.len(),
-            master_key.len(),
-            host_key
-        );
-
+        // Validate encrypted value format and length
         if encrypted_value.len() < 3 + 12 + 16 {
             return Err(BrowserVoyageError::ParseError(
                 "Invalid encrypted value length".into(),
             ));
         }
 
-        // Check for v10, v11, or v20 prefix (different Chrome versions)
-        if &encrypted_value[..3] != b"v20"
-            && &encrypted_value[..3] != b"v10"
-            && &encrypted_value[..3] != b"v11"
-        {
+        // Check for supported encryption prefixes (v10, v11, v20)
+        if !matches!(&encrypted_value[..3], b"v10" | b"v11" | b"v20") {
             return Err(BrowserVoyageError::ParseError(format!(
                 "Unknown encryption prefix: {:?}",
                 String::from_utf8_lossy(&encrypted_value[..3])
@@ -365,72 +406,20 @@ impl WindowsChromeExtractor {
         let nonce = &encrypted_value[3..15];
         let ciphertext = &encrypted_value[15..];
 
-        debug!(
-            "Decryption details for {}: nonce len={}, ciphertext len={}, master_key={}...{}",
-            self.browser_name,
-            nonce.len(),
-            ciphertext.len(),
-            hex::encode(&master_key[..4.min(master_key.len())]),
-            hex::encode(&master_key[master_key.len().saturating_sub(4)..])
-        );
-
-        // Log hex content of nonce and first/last parts of ciphertext for debugging
-        debug!(
-            "Hex details for {}: nonce={}, ciphertext_start={}, ciphertext_end={}",
-            self.browser_name,
-            hex::encode(nonce),
-            hex::encode(&ciphertext[..8.min(ciphertext.len())]),
-            hex::encode(&ciphertext[ciphertext.len().saturating_sub(8)..])
-        );
-
         let cipher = Aes256Gcm::new_from_slice(master_key)
             .map_err(|e| BrowserVoyageError::InvalidKeyLength(format!("{e:?}")))?;
         let nonce = Nonce::from_slice(nonce);
 
-        debug!("Attempting AES-GCM decryption for {}", self.browser_name);
-
-        // Use standard AES-GCM decryption (no AAD) for all formats
-        debug!("Using standard AES-GCM decryption (no AAD)");
+        // Attempt standard AES-GCM decryption
         let decrypted = match cipher.decrypt(nonce, ciphertext) {
             Ok(result) => result,
             Err(e) => {
-                debug!("AES-GCM decryption failed for {}: {}", self.browser_name, e);
-
-                // For v20 cookies that fail with 32-byte key, try alternative keys
+                // For v20 cookies in Edge/Brave, try Chrome's complex key derivation as fallback
                 if &encrypted_value[..3] == b"v20"
-                    && (self.browser_name == "Edge" || self.browser_name == "Brave")
+                    && matches!(self.browser_name.as_str(), "Edge" | "Brave")
                 {
-                    debug!(
-                        "Trying v20 decryption with alternative keys for {}",
-                        self.browser_name
-                    );
-
-                    // Try app_bound_encrypted_key approach (like Chrome uses)
-                    if let Ok(alt_key) = self.get_app_bound_key_for_v20() {
-                        debug!(
-                            "Attempting v20 decryption with app_bound key ({} bytes)",
-                            alt_key.len()
-                        );
-                        if alt_key.len() == 32 {
-                            let alt_cipher = Aes256Gcm::new_from_slice(&alt_key).ok();
-                            if let Some(alt_cipher) = alt_cipher {
-                                if let Ok(result) = alt_cipher.decrypt(nonce, ciphertext) {
-                                    debug!("v20 decryption successful with app_bound key");
-                                    // Handle binary cookie data gracefully
-                                    return match String::from_utf8(result.clone()) {
-                                        Ok(s) => Ok(s),
-                                        Err(_) => {
-                                            debug!(
-                                                "Cookie contains binary data, encoding as base64"
-                                            );
-                                            Ok(BASE64.encode(&result))
-                                        }
-                                    };
-                                } else {
-                                    debug!("v20 decryption also failed with app_bound key");
-                                }
-                            }
-                        }
+                    if let Some(result) = self.try_v20_fallback_decryption(nonce, ciphertext)? {
+                        return Ok(result);
                     }
                 }
 
@@ -440,26 +429,9 @@ impl WindowsChromeExtractor {
             }
         };
 
-        debug!(
-            "AES-GCM decryption successful for {}, decrypted len={}",
-            self.browser_name,
-            decrypted.len()
-        );
-
-        // For Edge/Brave, use simple decryption like the user's function
-        if self.browser_name == "Edge" || self.browser_name == "Brave" {
-            debug!(
-                "Using simple decryption for {} (no domain hash validation)",
-                self.browser_name
-            );
-            // Handle binary cookie data gracefully
-            return match String::from_utf8(decrypted.clone()) {
-                Ok(s) => Ok(s),
-                Err(_) => {
-                    debug!("Cookie contains binary data, encoding as base64");
-                    Ok(BASE64.encode(&decrypted))
-                }
-            };
+        // For Edge/Brave, use simple decryption (no domain hash validation)
+        if matches!(self.browser_name.as_str(), "Edge" | "Brave") {
+            return self.handle_binary_data(decrypted);
         }
 
         // Special handling for Chrome cookies: validate the domain hash
@@ -471,13 +443,7 @@ impl WindowsChromeExtractor {
 
             // If the first 32 bytes match the domain hash, extract the actual cookie value
             if decrypted.len() >= 32 && computed_hash.as_slice() == &decrypted[..32] {
-                debug!(
-                    "Domain hash verification passed for {}, stripping 32-byte prefix",
-                    host
-                );
                 return Ok(String::from_utf8(decrypted[32..].to_vec())?);
-            } else {
-                debug!("Domain hash verification failed or not present for {}, using full decrypted content", host);
             }
         }
 
@@ -542,14 +508,14 @@ impl WindowsChromeExtractor {
                 return Ok(key);
             }
             debug!(
-                "Standard DPAPI approach failed for {}, trying Edge browser approach",
+                "Standard DPAPI approach failed for {}, trying Chrome's complex key derivation",
                 self.browser_name
             );
         }
 
-        // Fallback: Try Edge browser approach using Chrome's system-user DPAPI method
+        // Fallback: Try Chrome's complex key derivation method
         if let Some(app_bound_encrypted_key) = &os_crypt.app_bound_encrypted_key {
-            if let Ok(key) = self.try_edge_browser_approach(app_bound_encrypted_key) {
+            if let Ok(key) = self.extract_chrome_style_key(app_bound_encrypted_key) {
                 return Ok(key);
             }
         }
@@ -596,6 +562,7 @@ impl WindowsChromeExtractor {
         Ok(state_key)
     }
 
+    /// Get alternative key for v20 cookies using Chrome's complex key derivation method
     fn get_app_bound_key_for_v20(&self) -> BrowserVoyageResult<Vec<u8>> {
         let local_state_path = self.user_data_path.join("Local State");
         let local_state_content = fs::read_to_string(&local_state_path)
@@ -605,23 +572,28 @@ impl WindowsChromeExtractor {
             BrowserVoyageError::ParseError(format!("Failed to parse Local State: {e}"))
         })?;
 
-        if let Some(app_bound_encrypted_key) = &local_state.os_crypt.app_bound_encrypted_key {
-            debug!("Attempting to use app_bound_encrypted_key for v20 decryption (Chrome method)");
-            // Use Chrome's complex key derivation method
-            self.try_edge_browser_approach(app_bound_encrypted_key)
-        } else {
-            Err(BrowserVoyageError::ParseError(
+        match &local_state.os_crypt.app_bound_encrypted_key {
+            Some(app_bound_encrypted_key) => {
+                // Use Chrome's complex key derivation method (system-user DPAPI + blob parsing)
+                self.extract_chrome_style_key(app_bound_encrypted_key)
+            }
+            None => Err(BrowserVoyageError::ParseError(
                 "No app_bound_encrypted_key found for v20 fallback".into(),
-            ))
+            )),
         }
     }
 
-    fn try_edge_browser_approach(
+    /// Extract master key using Chrome's complex derivation method
+    ///
+    /// This method uses system-user DPAPI decryption followed by blob parsing,
+    /// then extracts the last 32 bytes as the master key. Originally designed for Chrome,
+    /// but also used as a fallback for v20 cookies in Edge/Brave.
+    fn extract_chrome_style_key(
         &self,
         app_bound_encrypted_key: &str,
     ) -> BrowserVoyageResult<Vec<u8>> {
         info!(
-            "Attempting Edge browser approach for {} (system-user DPAPI + last 32 bytes)",
+            "Using Chrome's complex key derivation for {} (system-user DPAPI + last 32 bytes)",
             self.browser_name
         );
 
@@ -646,11 +618,11 @@ impl WindowsChromeExtractor {
 
         let key_blob_user_decrypted = self.dpapi_unprotect(&key_blob_system_decrypted)?;
 
-        // Try Edge browser approach: use the last 32 bytes of decrypted key directly
+        // Use the last 32 bytes of decrypted key directly (Edge/Brave style)
         if key_blob_user_decrypted.len() >= 32 {
             let state_key = key_blob_user_decrypted[key_blob_user_decrypted.len() - 32..].to_vec();
             debug!(
-                "Successfully extracted {} master key using Edge browser approach (last 32 bytes of {} total)",
+                "Successfully extracted {} master key using Chrome's complex derivation (last 32 bytes of {} total)",
                 self.browser_name,
                 key_blob_user_decrypted.len()
             );
