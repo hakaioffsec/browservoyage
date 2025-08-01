@@ -2,12 +2,12 @@ use crate::browser_extractor::{BrowserExtractor, ExtractedData};
 use crate::error::BrowserVoyageResult;
 use tracing::info;
 
+#[cfg(target_os = "linux")]
+use crate::chrome::LinuxChromeExtractor;
 #[cfg(target_os = "macos")]
 use crate::chrome::MacOSChromeExtractor;
 #[cfg(target_os = "windows")]
 use crate::chrome::WindowsChromeExtractor;
-#[cfg(target_os = "linux")]
-use crate::chrome::LinuxChromeExtractor;
 use crate::gecko::GeckoExtractor;
 #[cfg(target_os = "macos")]
 use crate::webkit::SafariExtractor;
@@ -21,7 +21,9 @@ impl BrowserFactory {
         // Chrome extractors
         #[cfg(target_os = "windows")]
         {
-            extractors.push(Box::new(WindowsChromeExtractor::new()));
+            extractors.push(Box::new(WindowsChromeExtractor::chrome()));
+            extractors.push(Box::new(WindowsChromeExtractor::edge()));
+            extractors.push(Box::new(WindowsChromeExtractor::brave()));
         }
 
         #[cfg(target_os = "macos")]

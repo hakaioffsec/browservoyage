@@ -37,10 +37,17 @@ fn is_admin() -> bool {
 fn main() -> Result<()> {
     // Initialize color-eyre and tracing
     color_eyre::install()?;
+
+    // Use trace-level logging for debug builds, info-level for release builds
+    let default_level = if cfg!(debug_assertions) {
+        tracing::Level::TRACE
+    } else {
+        tracing::Level::INFO
+    };
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(tracing::Level::INFO.into()),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive(default_level.into()),
         )
         .init();
 
