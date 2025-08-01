@@ -28,6 +28,7 @@ pub enum BrowserVoyageError {
     DecryptionFailed(String),
 
     #[error("Parse error: {0}")]
+    #[allow(dead_code)]
     ParseError(String),
 
     #[error("Database error: {0}")]

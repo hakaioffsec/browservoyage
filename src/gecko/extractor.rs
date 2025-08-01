@@ -64,13 +64,60 @@ impl GeckoExtractor {
             }
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
         {
-            // Use directories crate for cross-platform support
-            if let Some(dirs) = directories::BaseDirs::new() {
-                let firefox_dir = dirs.data_dir().join("firefox");
+            use directories::UserDirs;
+            if let Some(user_dirs) = UserDirs::new() {
+                let home = user_dirs.home_dir();
+                
+                // Standard Firefox profiles location on Linux
+                let firefox_dir = home.join(".mozilla/firefox");
                 if firefox_dir.exists() {
-                    installations.push(("Firefox".to_string(), firefox_dir));
+                    installations.push(("Firefox".to_string(), firefox_dir.clone()));
+                }
+
+                // Firefox Developer Edition
+                let dev_dir = home.join(".mozilla/firefox-dev");
+                if dev_dir.exists() {
+                    installations.push(("Firefox Developer Edition".to_string(), dev_dir));
+                }
+
+                // Firefox Nightly
+                let nightly_dir = home.join(".mozilla/firefox-nightly");
+                if nightly_dir.exists() {
+                    installations.push(("Firefox Nightly".to_string(), nightly_dir));
+                }
+
+                // Firefox ESR
+                let esr_dir = home.join(".mozilla/firefox-esr");
+                if esr_dir.exists() {
+                    installations.push(("Firefox ESR".to_string(), esr_dir));
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            use directories::UserDirs;
+            if let Some(user_dirs) = UserDirs::new() {
+                let home = user_dirs.home_dir();
+                
+                // Standard Firefox on macOS
+                let firefox_dir = home.join("Library/Application Support/Firefox");
+                if firefox_dir.exists() {
+                    installations.push(("Firefox".to_string(), firefox_dir.clone()));
+                }
+
+                // Firefox Developer Edition on macOS
+                let dev_dir = home.join("Library/Application Support/Firefox Developer Edition");
+                if dev_dir.exists() {
+                    installations.push(("Firefox Developer Edition".to_string(), dev_dir));
+                }
+
+                // Firefox Nightly on macOS
+                let nightly_dir = home.join("Library/Application Support/Firefox Nightly");
+                if nightly_dir.exists() {
+                    installations.push(("Firefox Nightly".to_string(), nightly_dir));
                 }
             }
         }
@@ -79,8 +126,13 @@ impl GeckoExtractor {
     }
 
     fn get_profiles(&self) -> BrowserVoyageResult<Vec<PathBuf>> {
-        // Firefox profiles are in a "Profiles" subdirectory
+        // On Windows, Firefox profiles are in a "Profiles" subdirectory
+        // On Linux/macOS, profiles are directly in the Firefox directory
+        #[cfg(target_os = "windows")]
         let profile_folder = self.browser_path.join("Profiles");
+        
+        #[cfg(not(target_os = "windows"))]
+        let profile_folder = self.browser_path.clone();
 
         if !profile_folder.exists() {
             return Err(BrowserVoyageError::Io(format!(
@@ -88,20 +140,127 @@ impl GeckoExtractor {
             )));
         }
 
+        // Try to parse profiles.ini if it exists (standard Firefox behavior)
+        let profiles_ini = profile_folder.join("profiles.ini");
+        if profiles_ini.exists() {
+            if let Ok(profiles) = self.parse_profiles_ini(&profiles_ini) {
+                if !profiles.is_empty() {
+                    debug!("Found {} profiles from profiles.ini", profiles.len());
+                    return Ok(profiles);
+                }
+            }
+        }
+
+        // Fallback: scan for profile directories manually
         let profiles: Vec<_> = fs::read_dir(&profile_folder)
             .map_err(|e| {
                 BrowserVoyageError::Io(format!("Failed to read profiles directory: {e}"))
                     .with_info(format!("Profile folder: {profile_folder:?}"))
             })?
             .filter_map(Result::ok)
-            .filter(|entry| entry.path().is_dir())
-            .map(|entry| entry.path())
+            .filter_map(|entry| {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        // Look for profile directories (contain dots and end with profile names)
+                        if name.contains('.') && (
+                            name.contains("default") || 
+                            name.contains("release") ||
+                            name.len() > 8  // Profile hash is usually longer
+                        ) {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+                None
+            })
             .collect();
 
         if profiles.is_empty() {
             return Err(BrowserVoyageError::NoDataFound
                 .with_info(format!("No profiles found in {profile_folder:?}")));
         }
+        
+        debug!("Found {} profiles by directory scanning", profiles.len());
+        Ok(profiles)
+    }
+
+    fn parse_profiles_ini(&self, profiles_ini_path: &PathBuf) -> BrowserVoyageResult<Vec<PathBuf>> {
+        let content = fs::read_to_string(profiles_ini_path)
+            .map_err(|e| BrowserVoyageError::Io(format!("Failed to read profiles.ini: {e}")))?;
+
+        let mut profiles = Vec::new();
+        let mut current_section = String::new();
+        let mut is_default = false;
+        let mut path: Option<PathBuf> = None;
+
+        for line in content.lines() {
+            let line = line.trim();
+            
+            if line.starts_with('[') && line.ends_with(']') {
+                // Process previous profile if any
+                if current_section.starts_with("Profile") {
+                    if let Some(profile_path) = path.take() {
+                        let full_path = if profile_path.is_absolute() {
+                            profile_path
+                        } else {
+                            self.browser_path.join(profile_path)
+                        };
+                        
+                        if full_path.exists() {
+                            if is_default {
+                                // Insert default profile at the beginning
+                                profiles.insert(0, full_path);
+                            } else {
+                                profiles.push(full_path);
+                            }
+                        }
+                    }
+                }
+                
+                // Start new section
+                current_section = line[1..line.len()-1].to_string();
+                is_default = false;
+                path = None;
+                continue;
+            }
+
+            if current_section.starts_with("Profile") {
+                if let Some((key, value)) = line.split_once('=') {
+                    match key.trim() {
+                        "Path" => path = Some(PathBuf::from(value.trim())),
+                        "IsRelative" => {
+                            // Handle relative vs absolute paths
+                            if value.trim() == "0" && path.is_some() {
+                                // Absolute path, use as is
+                            }
+                        },
+                        "Default" => is_default = value.trim() == "1",
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Process the last profile
+        if current_section.starts_with("Profile") {
+            if let Some(profile_path) = path {
+                let full_path = if profile_path.is_absolute() {
+                    profile_path
+                } else {
+                    self.browser_path.join(profile_path)
+                };
+                
+                if full_path.exists() {
+                    if is_default {
+                        profiles.insert(0, full_path);
+                    } else {
+                        profiles.push(full_path);
+                    }
+                }
+            }
+        }
+
         Ok(profiles)
     }
 
