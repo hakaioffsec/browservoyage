@@ -38,7 +38,6 @@ pub mod windows;
 pub use browser_extractor::{
     BrowserExtractor, BrowserInfo, Cookie, Credential, ExtractedData, ProfileData,
 };
-pub use browser_factory::BrowserFactory;
 pub use error::{BrowserVoyageError, BrowserVoyageResult};
 
 /// Content types that can be extracted from browsers.
@@ -169,7 +168,7 @@ pub fn extract_browser_data(config: &ExtractionConfig) -> BrowserVoyageResult<Ve
     }
 
     // Get all available extractors
-    let mut available_extractors = BrowserFactory::get_available_extractors();
+    let mut available_extractors = crate::browser_factory::get_extractors().unwrap_or_default();
 
     // Filter extractors based on browser types if not "All"
     if !config.browser_types.contains(&BrowserType::All) {

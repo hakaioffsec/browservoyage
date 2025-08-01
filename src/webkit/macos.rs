@@ -1,38 +1,57 @@
+//! Modern Safari (WebKit) browser extractor using common abstractions
+
 use crate::browser_extractor::{BrowserExtractor, BrowserInfo, Cookie, ExtractedData, ProfileData};
+use crate::common::PlatformUtils;
 use crate::error::{BrowserVoyageError, BrowserVoyageResult};
 use binary_cookies::BinaryCookiesReader;
 use std::{fs::File, io::Read, path::PathBuf};
-use tracing::{debug, warn};
+use tracing::{debug, info};
 
-pub struct SafariExtractor {
-    name: String,
-    vendor: String,
-    platform: String,
+/// Safari browser configuration
+#[derive(Debug, Clone)]
+pub struct SafariBrowserConfig {
+    pub name: String,
+    pub vendor: String,
+    pub platform: String,
+    pub container_id: String,
 }
 
-impl SafariExtractor {
-    pub fn new() -> Self {
-        SafariExtractor {
+impl SafariBrowserConfig {
+    pub fn safari() -> Self {
+        Self {
             name: "Safari".to_string(),
             vendor: "Apple".to_string(),
             platform: "macOS".to_string(),
+            container_id: "com.apple.Safari".to_string(),
+        }
+    }
+}
+
+/// Modern Safari extractor with improved organization
+#[derive(Debug)]
+pub struct SafariExtractor {
+    config: SafariBrowserConfig,
+    container_path: Option<PathBuf>,
+}
+
+impl SafariExtractor {
+    /// Create a new Safari extractor
+    pub fn new() -> Self {
+        let config = SafariBrowserConfig::safari();
+        let container_path = Self::find_safari_container();
+
+        Self {
+            config,
+            container_path,
         }
     }
 
-    pub fn find_safari_installations() -> Vec<(String, PathBuf)> {
-        let mut installations = Vec::new();
-
-        // Safari uses a sandboxed container location on modern macOS
-        let home = match std::env::var("HOME") {
-            Ok(h) => h,
-            Err(e) => {
-                warn!("Could not get HOME environment variable: {}", e);
-                return installations;
-            }
-        };
+    /// Find Safari container path on modern macOS
+    fn find_safari_container() -> Option<PathBuf> {
+        let home_dir = PlatformUtils::get_home_dir()?;
 
         // Modern Safari container path
-        let safari_container_path = PathBuf::from(&home)
+        let safari_container_path = home_dir
             .join("Library")
             .join("Containers")
             .join("com.apple.Safari")
@@ -46,186 +65,185 @@ impl SafariExtractor {
 
         if safari_container_path.exists() {
             debug!(
-                "Safari container directory exists at: {:?}",
+                "Safari container directory found at: {:?}",
                 safari_container_path
             );
-            installations.push(("Safari".to_string(), safari_container_path));
+            Some(safari_container_path)
         } else {
-            // Try legacy Safari path as fallback
-            let legacy_safari_path = PathBuf::from(&home).join("Library").join("Safari");
-            debug!(
-                "Safari container not found, trying legacy path: {:?}",
-                legacy_safari_path
-            );
-
-            if legacy_safari_path.exists() {
-                debug!(
-                    "Legacy Safari directory exists at: {:?}",
-                    legacy_safari_path
-                );
-                installations.push(("Safari".to_string(), legacy_safari_path));
+            debug!("Safari container not found, checking legacy location");
+            // Try legacy location
+            let legacy_path = home_dir.join("Library").join("Safari");
+            if legacy_path.exists() {
+                debug!("Legacy Safari directory found at: {:?}", legacy_path);
+                Some(legacy_path)
             } else {
-                warn!("Safari not found at container or legacy paths");
+                debug!("No Safari installation found");
+                None
+            }
+        }
+    }
+
+    /// Get the path to Safari's binary cookies file
+    fn get_cookies_file_path(&self) -> Option<PathBuf> {
+        let container_path = self.container_path.as_ref()?;
+
+        // Try different possible cookie file locations
+        let possible_paths = [
+            container_path.join("Cookies").join("Cookies.binarycookies"),
+            container_path.join("Safari").join("Cookies.binarycookies"),
+        ];
+
+        for path in &possible_paths {
+            debug!("Checking for cookies file at: {:?}", path);
+            if path.exists() {
+                debug!("Found cookies file at: {:?}", path);
+                return Some(path.clone());
             }
         }
 
-        installations
+        debug!("No cookies file found in any expected location");
+        None
     }
 
-    fn get_cookies_path(&self, safari_base: &PathBuf) -> BrowserVoyageResult<PathBuf> {
-        let cookies_path = safari_base.join("Cookies").join("Cookies.binarycookies");
-
-        debug!("Checking cookies path: {:?}", cookies_path);
-
-        // First check if we can access the Safari directory itself
-        if let Err(e) = std::fs::read_dir(safari_base) {
-            warn!("Cannot access Safari directory {:?}: {}", safari_base, e);
-            let is_container_path = safari_base
-                .to_string_lossy()
-                .contains("Containers/com.apple.Safari");
-            return Err(BrowserVoyageError::AccessDenied(format!(
-                "Cannot access Safari {} directory at {}. Grant Full Disk Access to your terminal or IDE in System Settings > Privacy & Security > Full Disk Access",
-                if is_container_path { "container" } else { "" },
-                safari_base.display()
-            )));
-        }
-
-        // Then check if the Cookies subdirectory exists and is accessible
-        let cookies_dir = safari_base.join("Cookies");
-        if let Err(e) = std::fs::read_dir(&cookies_dir) {
-            warn!(
-                "Cannot access Safari Cookies directory {:?}: {}",
-                cookies_dir, e
-            );
-            return Err(BrowserVoyageError::AccessDenied(
-                "Cannot access Safari Cookies directory. Grant Full Disk Access to your terminal or IDE in System Settings > Privacy & Security > Full Disk Access".to_string()
-            ));
-        }
-
-        if !cookies_path.exists() {
-            debug!("Cookies file does not exist at {:?}", cookies_path);
-            return Err(BrowserVoyageError::NoDataFound);
-        }
-
-        Ok(cookies_path)
-    }
-
+    /// Clean cookie values by removing binary plist data and null terminators
     fn clean_cookie_value(value: &str) -> String {
-        // Safari binary cookies sometimes include binary plist metadata at the end
-        // Look for the "bplist" marker and truncate before it
-        if let Some(pos) = value.find("bplist") {
-            value[..pos].to_string()
+        let without_bplist = if let Some(pos) = value.find("bplist") {
+            &value[..pos]
         } else {
-            // Also check for other common binary markers
-            let cleaned = value
-                .trim_end_matches(|c: char| c.is_control() || c == '\0')
-                .trim();
-            cleaned.to_string()
-        }
+            value
+        };
+
+        without_bplist.trim_end_matches('\0').to_string()
     }
 
-    fn query_cookies(&self, cookies_path: &PathBuf) -> BrowserVoyageResult<Vec<Cookie>> {
-        let mut file = File::open(cookies_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                BrowserVoyageError::AccessDenied(
-                    "Cannot read Safari cookies file. Grant Full Disk Access to your terminal or IDE in System Settings > Privacy & Security > Full Disk Access".to_string()
-                )
-            } else {
-                BrowserVoyageError::Io(format!("Failed to open cookies file: {}", e))
-            }
-        })?;
+    /// Extract cookies from Safari's binary cookies format
+    fn extract_safari_cookies(&self) -> BrowserVoyageResult<Vec<Cookie>> {
+        let cookies_file_path = self
+            .get_cookies_file_path()
+            .ok_or_else(|| BrowserVoyageError::NoDataFound)?;
 
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)
+        debug!("Reading cookies from: {:?}", cookies_file_path);
+
+        let mut file = File::open(&cookies_file_path)
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    BrowserVoyageError::AccessDenied(format!(
+                        "Permission denied accessing Safari cookies. Full Disk Access may be required. Path: {}",
+                        cookies_file_path.display()
+                    ))
+                } else {
+                    BrowserVoyageError::Io(format!("Failed to open cookies file: {}", e))
+                }
+            })?;
+
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
             .map_err(|e| BrowserVoyageError::Io(format!("Failed to read cookies file: {}", e)))?;
 
-        let mut reader = BinaryCookiesReader::from_vec(&data);
+        debug!("Read {} bytes from cookies file", buffer.len());
+
+        let mut reader = BinaryCookiesReader::from_vec(&buffer);
         reader.decode().map_err(|e| {
             BrowserVoyageError::ParseError(format!("Failed to decode binary cookies: {}", e))
         })?;
 
-        let cookies = reader
-            .origin_pages()
-            .iter()
-            .flat_map(|page| page.cookies())
-            .map(|cookie| {
-                // Clean up cookie values that may contain binary plist metadata
-                let clean_value = Self::clean_cookie_value(&cookie.value_str());
+        let mut cookies = Vec::new();
+        for page in reader.origin_pages() {
+            for binary_cookie in page.cookies() {
+                // Convert binary cookie to our Cookie struct
+                let cookie = Cookie {
+                    host: binary_cookie.domain_str().to_string(),
+                    name: binary_cookie.name_str().to_string(),
+                    value: Self::clean_cookie_value(&binary_cookie.value_str()),
+                    path: binary_cookie.path_str().to_string(),
+                    expiry: binary_cookie.expires as i64,
+                    is_secure: binary_cookie.secure,
+                };
+                cookies.push(cookie);
+            }
+        }
 
-                Cookie {
-                    host: cookie.domain_str().to_string(),
-                    name: cookie.name_str().to_string(),
-                    value: clean_value,
-                    path: cookie.path_str().to_string(),
-                    is_secure: cookie.secure,
-                    expiry: cookie.expires as i64,
-                }
-            })
-            .collect();
-
+        info!("Extracted {} cookies from Safari", cookies.len());
         Ok(cookies)
+    }
+
+    /// Check if Safari is available and accessible
+    pub fn is_available(&self) -> bool {
+        self.container_path.is_some() && self.get_cookies_file_path().is_some()
+    }
+}
+
+impl Default for SafariExtractor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl BrowserExtractor for SafariExtractor {
     fn name(&self) -> &str {
-        &self.name
+        &self.config.name
     }
 
     fn extract(&mut self) -> BrowserVoyageResult<ExtractedData> {
-        let mut profiles = Vec::new();
+        info!("Starting Safari extraction on macOS");
 
-        let installations = Self::find_safari_installations();
-        debug!("Found {} Safari installations", installations.len());
-
-        for (name, path) in installations {
-            debug!("Processing Safari profile '{}' at: {:?}", name, path);
-
-            match self.get_cookies_path(&path) {
-                Ok(cookies_path) => {
-                    debug!("Found cookies file at: {:?}", cookies_path);
-                    match self.query_cookies(&cookies_path) {
-                        Ok(cookies) => {
-                            debug!("Successfully extracted {} cookies", cookies.len());
-                            if !cookies.is_empty() {
-                                let profile = ProfileData {
-                                    name: name.clone(),
-                                    path: path.to_string_lossy().to_string(),
-                                    cookies,
-                                    credentials: Vec::new(), // Safari doesn't store credentials in a way we can extract
-                                };
-                                profiles.push(profile);
-                            } else {
-                                warn!("No cookies found in cookies file");
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to process cookies: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    // If it's an AccessDenied error, propagate it immediately
-                    if matches!(e, BrowserVoyageError::AccessDenied(_)) {
-                        return Err(e);
-                    }
-                    warn!("Failed to get cookies path for profile {}: {}", name, e);
-                }
-            }
-        }
-
-        if profiles.is_empty() {
-            debug!("No Safari profiles found with data");
+        if !self.is_available() {
             return Err(BrowserVoyageError::NoDataFound);
         }
 
+        // Extract cookies (Safari doesn't store passwords in an easily accessible format)
+        let cookies = self.extract_safari_cookies()?;
+
+        // Safari typically has a single "profile" (the default)
+        let profile_data = ProfileData {
+            name: "Default".to_string(),
+            path: self
+                .container_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            cookies,
+            credentials: Vec::new(), // Safari passwords are in Keychain, not easily accessible
+        };
+
         Ok(ExtractedData {
             browser: BrowserInfo {
-                name: self.name.clone(),
-                vendor: self.vendor.clone(),
-                platform: self.platform.clone(),
+                name: self.config.name.clone(),
+                vendor: self.config.vendor.clone(),
+                platform: self.config.platform.clone(),
             },
-            profiles,
+            profiles: vec![profile_data],
         })
+    }
+}
+
+/// Legacy compatibility - creates the modern extractor
+pub fn create_safari_extractor() -> SafariExtractor {
+    SafariExtractor::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_safari_config() {
+        let config = SafariBrowserConfig::safari();
+        assert_eq!(config.name, "Safari");
+        assert_eq!(config.vendor, "Apple");
+        assert_eq!(config.platform, "macOS");
+    }
+
+    #[test]
+    fn test_safari_extractor_creation() {
+        let extractor = SafariExtractor::new();
+        assert_eq!(extractor.name(), "Safari");
+    }
+
+    #[test]
+    fn test_container_path_discovery() {
+        let path = SafariExtractor::find_safari_container();
+        // This will vary based on the system, but should not panic
+        println!("Safari container path: {:?}", path);
     }
 }
