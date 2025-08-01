@@ -337,6 +337,14 @@ impl WindowsChromeExtractor {
         master_key: &[u8],
         host_key: Option<&str>,
     ) -> BrowserVoyageResult<String> {
+        debug!(
+            "decrypt_chromium_value for {}: encrypted_value len={}, master_key len={}, host_key={:?}",
+            self.browser_name,
+            encrypted_value.len(),
+            master_key.len(),
+            host_key
+        );
+
         if encrypted_value.len() < 3 + 12 + 16 {
             return Err(BrowserVoyageError::ParseError(
                 "Invalid encrypted value length".into(),
@@ -357,15 +365,104 @@ impl WindowsChromeExtractor {
         let nonce = &encrypted_value[3..15];
         let ciphertext = &encrypted_value[15..];
 
+        debug!(
+            "Decryption details for {}: nonce len={}, ciphertext len={}, master_key={}...{}",
+            self.browser_name,
+            nonce.len(),
+            ciphertext.len(),
+            hex::encode(&master_key[..4.min(master_key.len())]),
+            hex::encode(&master_key[master_key.len().saturating_sub(4)..])
+        );
+
+        // Log hex content of nonce and first/last parts of ciphertext for debugging
+        debug!(
+            "Hex details for {}: nonce={}, ciphertext_start={}, ciphertext_end={}",
+            self.browser_name,
+            hex::encode(nonce),
+            hex::encode(&ciphertext[..8.min(ciphertext.len())]),
+            hex::encode(&ciphertext[ciphertext.len().saturating_sub(8)..])
+        );
+
         let cipher = Aes256Gcm::new_from_slice(master_key)
             .map_err(|e| BrowserVoyageError::InvalidKeyLength(format!("{e:?}")))?;
         let nonce = Nonce::from_slice(nonce);
 
-        let decrypted = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|e| BrowserVoyageError::DecryptionFailed(format!("AES-GCM: {e}")))?;
+        debug!("Attempting AES-GCM decryption for {}", self.browser_name);
 
-        // Special handling for cookies: validate the domain hash
+        // Use standard AES-GCM decryption (no AAD) for all formats
+        debug!("Using standard AES-GCM decryption (no AAD)");
+        let decrypted = match cipher.decrypt(nonce, ciphertext) {
+            Ok(result) => result,
+            Err(e) => {
+                debug!("AES-GCM decryption failed for {}: {}", self.browser_name, e);
+
+                // For v20 cookies that fail with 32-byte key, try alternative keys
+                if &encrypted_value[..3] == b"v20"
+                    && (self.browser_name == "Edge" || self.browser_name == "Brave")
+                {
+                    debug!(
+                        "Trying v20 decryption with alternative keys for {}",
+                        self.browser_name
+                    );
+
+                    // Try app_bound_encrypted_key approach (like Chrome uses)
+                    if let Ok(alt_key) = self.get_app_bound_key_for_v20() {
+                        debug!(
+                            "Attempting v20 decryption with app_bound key ({} bytes)",
+                            alt_key.len()
+                        );
+                        if alt_key.len() == 32 {
+                            let alt_cipher = Aes256Gcm::new_from_slice(&alt_key).ok();
+                            if let Some(alt_cipher) = alt_cipher {
+                                if let Ok(result) = alt_cipher.decrypt(nonce, ciphertext) {
+                                    debug!("v20 decryption successful with app_bound key");
+                                    // Handle binary cookie data gracefully
+                                    return match String::from_utf8(result.clone()) {
+                                        Ok(s) => Ok(s),
+                                        Err(_) => {
+                                            debug!(
+                                                "Cookie contains binary data, encoding as base64"
+                                            );
+                                            Ok(BASE64.encode(&result))
+                                        }
+                                    };
+                                } else {
+                                    debug!("v20 decryption also failed with app_bound key");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return Err(BrowserVoyageError::DecryptionFailed(format!(
+                    "AES-GCM: {e}"
+                )));
+            }
+        };
+
+        debug!(
+            "AES-GCM decryption successful for {}, decrypted len={}",
+            self.browser_name,
+            decrypted.len()
+        );
+
+        // For Edge/Brave, use simple decryption like the user's function
+        if self.browser_name == "Edge" || self.browser_name == "Brave" {
+            debug!(
+                "Using simple decryption for {} (no domain hash validation)",
+                self.browser_name
+            );
+            // Handle binary cookie data gracefully
+            return match String::from_utf8(decrypted.clone()) {
+                Ok(s) => Ok(s),
+                Err(_) => {
+                    debug!("Cookie contains binary data, encoding as base64");
+                    Ok(BASE64.encode(&decrypted))
+                }
+            };
+        }
+
+        // Special handling for Chrome cookies: validate the domain hash
         if let Some(host) = host_key {
             // Calculate SHA-256 hash of the domain
             let mut hasher = Sha256::new();
@@ -479,7 +576,8 @@ impl WindowsChromeExtractor {
         info!("Decrypting {} key with user DPAPI only", self.browser_name);
         let decrypted_content = self.dpapi_unprotect(encrypted_key_data)?;
 
-        // For Edge and Brave, the state key is the last 32 bytes of the DPAPI decrypted content
+        // Store full decrypted content for potential v20 cookie decryption
+        // For now, still return last 32 bytes as primary key
         if decrypted_content.len() < 32 {
             return Err(BrowserVoyageError::ParseError(format!(
                 "DPAPI decrypted content too short for {}: expected at least 32 bytes, got {}",
@@ -496,6 +594,26 @@ impl WindowsChromeExtractor {
             decrypted_content.len()
         );
         Ok(state_key)
+    }
+
+    fn get_app_bound_key_for_v20(&self) -> BrowserVoyageResult<Vec<u8>> {
+        let local_state_path = self.user_data_path.join("Local State");
+        let local_state_content = fs::read_to_string(&local_state_path)
+            .map_err(|e| BrowserVoyageError::Io(format!("Failed to read Local State: {e}")))?;
+
+        let local_state: LocalState = serde_json::from_str(&local_state_content).map_err(|e| {
+            BrowserVoyageError::ParseError(format!("Failed to parse Local State: {e}"))
+        })?;
+
+        if let Some(app_bound_encrypted_key) = &local_state.os_crypt.app_bound_encrypted_key {
+            debug!("Attempting to use app_bound_encrypted_key for v20 decryption (Chrome method)");
+            // Use Chrome's complex key derivation method
+            self.try_edge_browser_approach(app_bound_encrypted_key)
+        } else {
+            Err(BrowserVoyageError::ParseError(
+                "No app_bound_encrypted_key found for v20 fallback".into(),
+            ))
+        }
     }
 
     fn try_edge_browser_approach(
@@ -602,6 +720,15 @@ impl WindowsChromeExtractor {
                     || &encrypted_value[..3] == b"v11")
             {
                 encrypted_cookies += 1;
+
+                // Log full encrypted_value for debugging
+                debug!(
+                    "Cookie {}/{} encrypted_value (full hex): {}",
+                    host_key,
+                    name,
+                    hex::encode(&encrypted_value)
+                );
+
                 match self.decrypt_chromium_value(&encrypted_value, master_key, Some(&host_key)) {
                     Ok(decrypted_value) => {
                         debug!("Successfully decrypted cookie {}/{}", host_key, name);
@@ -688,6 +815,13 @@ impl WindowsChromeExtractor {
                     || &encrypted_password[..3] == b"v10"
                     || &encrypted_password[..3] == b"v11")
             {
+                // Log full encrypted_password for debugging
+                debug!(
+                    "Credential {} encrypted_password (full hex): {}",
+                    origin_url,
+                    hex::encode(&encrypted_password)
+                );
+
                 match self.decrypt_chromium_value(&encrypted_password, master_key, None) {
                     Ok(decrypted_password) => {
                         extracted_credentials.push(Credential {
