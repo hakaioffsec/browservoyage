@@ -3,7 +3,7 @@ use crate::error::BrowserVoyageResult;
 use tracing::info;
 
 #[cfg(target_os = "linux")]
-use crate::chrome::LinuxChromeExtractor;
+use crate::chrome::ChromeExtractor;
 #[cfg(target_os = "macos")]
 use crate::chrome::MacOSChromeExtractor;
 #[cfg(target_os = "windows")]
@@ -49,13 +49,13 @@ impl BrowserFactory {
         #[cfg(target_os = "linux")]
         {
             // Try to add Chrome
-            extractors.push(Box::new(LinuxChromeExtractor::chrome()));
+            extractors.push(Box::new(ChromeExtractor::chrome()));
 
             // Try to add Brave
-            extractors.push(Box::new(LinuxChromeExtractor::brave()));
+            extractors.push(Box::new(ChromeExtractor::brave()));
 
             // Try to add Chromium
-            extractors.push(Box::new(LinuxChromeExtractor::chromium()));
+            extractors.push(Box::new(ChromeExtractor::chromium()));
         }
 
         // Firefox extractors - cross-platform

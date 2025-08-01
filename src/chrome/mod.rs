@@ -1,25 +1,19 @@
-pub mod common;
-
-#[cfg(target_os = "windows")]
-pub mod windows;
-
-#[cfg(target_os = "macos")]
+// pub mod windows;
 pub mod macos;
+pub mod linux;
+pub mod common;
+// #[cfg(target_os = "linux")]
+// pub use self::linux_v2::ModernLinuxChromeExtractor as ChromeExtractor;
+
+#[cfg(target_os = "linux")]
+pub use self::linux::LinuxChromeExtractor as ChromeExtractor;
+
+
+// #[cfg(target_os = "macos")]
+// pub use self::macos_v2::MacosChromeExtractor as ChromeExtractor;
 
 #[cfg(target_os = "macos")]
-pub mod macos_v2;
-
-#[cfg(target_os = "linux")]
-pub mod linux;
-
-#[cfg(target_os = "linux")]
-pub mod linux_v2;
+pub use self::macos::MacosChromeExtractor;
 
 #[cfg(target_os = "windows")]
-pub use windows::WindowsChromeExtractor;
-
-#[cfg(target_os = "macos")]
-pub use macos::MacOSChromeExtractor;
-
-#[cfg(target_os = "linux")]
-pub use linux::LinuxChromeExtractor;
+pub use self::windows::WindowsChromeExtractor as ChromeExtractor;
