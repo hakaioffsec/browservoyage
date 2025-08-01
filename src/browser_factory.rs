@@ -12,9 +12,14 @@ use crate::gecko::GeckoExtractor;
 #[cfg(target_os = "macos")]
 use crate::webkit::SafariExtractor;
 
+/// A factory for creating browser-specific data extractors.
 pub struct BrowserFactory;
 
 impl BrowserFactory {
+    /// Returns a vector of all available browser extractors for the current platform.
+    ///
+    /// This function checks for the presence of supported browsers and returns a
+    /// vector of `Box<dyn BrowserExtractor>` for each one that is found.
     pub fn get_available_extractors() -> Vec<Box<dyn BrowserExtractor>> {
         let mut extractors: Vec<Box<dyn BrowserExtractor>> = Vec::new();
 
@@ -68,6 +73,11 @@ impl BrowserFactory {
         extractors
     }
 
+    /// Extracts data from all available browsers.
+    ///
+    /// This function gets all available browser extractors and calls the `extract`
+    /// method on each one. It returns a vector of `ExtractedData` structs, one
+    /// for each browser that was successfully extracted.
     pub fn extract_all() -> BrowserVoyageResult<Vec<ExtractedData>> {
         let mut all_results = Vec::new();
         let mut extractors = Self::get_available_extractors();

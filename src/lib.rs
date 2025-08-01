@@ -1,7 +1,23 @@
-//! BrowserVoyage - A comprehensive browser data extraction library
+//! # BrowserVoyage
+//!
+//! A comprehensive browser data extraction library.
 //!
 //! This library provides functionality to extract cookies, credentials, and other data
 //! from popular web browsers across different platforms.
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use browservoyage::{extract_browser_data, ExtractionConfig};
+//!
+//! fn main() {
+//!     let config = ExtractionConfig::default();
+//!     match extract_browser_data(&config) {
+//!         Ok(data) => println!("Extracted data: {:?}", data),
+//!         Err(e) => eprintln!("Error: {}", e),
+//!     }
+//! }
+//! ```
 
 pub mod browser_extractor;
 pub mod browser_factory;
@@ -25,16 +41,21 @@ pub use browser_extractor::{
 pub use browser_factory::BrowserFactory;
 pub use error::{BrowserVoyageError, BrowserVoyageResult};
 
-/// Content types that can be extracted from browsers
+/// Content types that can be extracted from browsers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentType {
+    /// Website cookies.
     Cookies,
+    /// Saved login credentials.
     Credentials,
+    /// Browsing history.
     History,
+    /// All available content types.
     All,
 }
 
 impl ContentType {
+    /// Returns a vector of all individual content types.
     pub fn all_types() -> Vec<ContentType> {
         vec![
             ContentType::Cookies,
@@ -44,19 +65,27 @@ impl ContentType {
     }
 }
 
-/// Supported browser types
+/// Supported browser types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowserType {
+    /// Google Chrome.
     Chrome,
+    /// Mozilla Firefox.
     Firefox,
+    /// Microsoft Edge.
     Edge,
+    /// Apple Safari.
     Safari,
+    /// Brave Browser.
     Brave,
+    /// The open-source Chromium browser.
     Chromium,
+    /// All supported browsers.
     All,
 }
 
 impl BrowserType {
+    /// Returns a vector of all Chromium-based browser types.
     pub fn chromium_based() -> Vec<BrowserType> {
         vec![
             BrowserType::Chrome,
@@ -66,6 +95,7 @@ impl BrowserType {
         ]
     }
 
+    /// Returns a vector of all individual browser types.
     pub fn all_types() -> Vec<BrowserType> {
         vec![
             BrowserType::Chrome,
@@ -78,25 +108,37 @@ impl BrowserType {
     }
 }
 
-/// Output formats supported by the library
+/// Output formats supported by the library.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputFormat {
+    /// JSON format.
     Json,
+    /// CSV format.
     Csv,
+    /// XML format.
     Xml,
 }
 
-/// Configuration for browser data extraction
+/// Configuration for browser data extraction.
 #[derive(Debug, Clone)]
 pub struct ExtractionConfig {
+    /// The types of content to extract.
     pub content_types: Vec<ContentType>,
+    /// The browsers to extract from.
     pub browser_types: Vec<BrowserType>,
+    /// The format for the output.
     pub output_format: OutputFormat,
+    /// The path to the output file. If `None`, output is written to stdout.
     pub output_path: Option<std::path::PathBuf>,
+    /// Whether to enable verbose logging.
     pub verbose: bool,
 }
 
 impl Default for ExtractionConfig {
+    /// Creates a default `ExtractionConfig`.
+    ///
+    /// By default, all content types are extracted from all browsers,
+    /// and the output is formatted as JSON.
     fn default() -> Self {
         Self {
             content_types: vec![ContentType::All],
@@ -108,7 +150,19 @@ impl Default for ExtractionConfig {
     }
 }
 
-/// Main extraction function that respects the configuration
+/// Extracts browser data based on the provided configuration.
+///
+/// This is the main entry point for the library. It takes an `ExtractionConfig`
+/// and returns a vector of `ExtractedData` structs, one for each browser
+/// that was successfully extracted.
+///
+/// # Arguments
+///
+/// * `config` - A reference to an `ExtractionConfig` that specifies what to extract.
+///
+/// # Returns
+///
+/// A `BrowserVoyageResult` containing either a vector of `ExtractedData` or a `BrowserVoyageError`.
 pub fn extract_browser_data(config: &ExtractionConfig) -> BrowserVoyageResult<Vec<ExtractedData>> {
     if config.verbose {
         tracing::info!("Starting browser data extraction with config: {:?}", config);
