@@ -1,5 +1,5 @@
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::Path};
-use tracing::{debug, info, instrument};
+use tracing::{debug, instrument};
 use windows::core::BOOL;
 use windows::Win32::System::Threading::OpenProcessToken;
 use windows::Win32::{

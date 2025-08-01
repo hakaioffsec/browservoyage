@@ -3,12 +3,6 @@ pub mod common;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-#[cfg(target_os = "windows")]
-pub mod windows_v2;
-
-#[cfg(target_os = "windows")]
-pub mod windows_v3;
-
 #[cfg(target_os = "macos")]
 pub mod macos;
 
