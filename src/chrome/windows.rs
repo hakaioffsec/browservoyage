@@ -236,7 +236,7 @@ impl WindowsChromeExtractor {
     fn derive_v20_master_key(&self, parsed_data: &ParsedKeyBlob) -> BrowserVoyageResult<Vec<u8>> {
         match parsed_data.flag {
             1 => {
-                info!("Using AES-256-GCM decryption (flag 1)");
+                debug!("Using AES-256-GCM decryption (flag 1)");
                 let aes_key = hex::decode(
                     "B31C6E241AC846728DA9C1FAC4936651CFFB944D143AB816276BCC6DA0284787",
                 )?;
@@ -252,7 +252,7 @@ impl WindowsChromeExtractor {
                     .map_err(|e| BrowserVoyageError::DecryptionFailed(format!("AES: {e}")))
             }
             2 => {
-                info!("Using ChaCha20-Poly1305 decryption (flag 2)");
+                debug!("Using ChaCha20-Poly1305 decryption (flag 2)");
                 let chacha20_key = hex::decode(
                     "E98F37D7F4E1FA433D19304DC2258042090E2D1D7EEA7670D41F738D08729660",
                 )?;
@@ -268,7 +268,7 @@ impl WindowsChromeExtractor {
                     .map_err(|e| BrowserVoyageError::DecryptionFailed(format!("ChaCha20: {e}")))
             }
             3 => {
-                info!("Using AES-256-GCM with CNG decryption (flag 3)");
+                debug!("Using AES-256-GCM with CNG decryption (flag 3)");
                 let xor_key = hex::decode(
                     "CCF8A1CEC56605B8517552BA1A2D061C03A29E90274FB2FCF59BA4B75C392390",
                 )?;
@@ -592,7 +592,7 @@ impl WindowsChromeExtractor {
         &self,
         app_bound_encrypted_key: &str,
     ) -> BrowserVoyageResult<Vec<u8>> {
-        info!(
+        debug!(
             "Using Chrome's complex key derivation for {} (system-user DPAPI + last 32 bytes)",
             self.browser_name
         );

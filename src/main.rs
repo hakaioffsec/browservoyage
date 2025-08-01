@@ -37,8 +37,6 @@ fn main() -> Result<()> {
         )
         .init();
 
-    info!("BrowserVoyage - Browser Data Extractor");
-
     if cli.verbose || cli.debug || cli.trace {
         info!("Running with configuration: {:?}", cli);
     }
@@ -131,7 +129,7 @@ fn main() -> Result<()> {
                 info!("No browser data found or extracted.");
             } else {
                 info!(
-                    "\nExtraction completed. {} browser(s) processed.",
+                    "Extraction completed. {} browser(s) processed.",
                     results.len()
                 );
                 if output_dir.is_dir() {

@@ -110,14 +110,14 @@ fn get_system_process_pid() -> BrowserVoyageResult<u32> {
         let process_name = get_process_name(pid).unwrap_or_default();
 
         if process_name == "lsass.exe" {
-            info!("Found lsass.exe with PID: {}", pid);
+            debug!("Found lsass.exe with PID: {}", pid);
             return Ok(pid);
         } else if process_name == "winlogon.exe" {
             fallback_pid = Some(pid);
         }
     }
     if let Some(pid) = fallback_pid {
-        info!("Using winlogon.exe as fallback with PID: {}", pid);
+        debug!("Using winlogon.exe as fallback with PID: {}", pid);
         return Ok(pid);
     }
 
@@ -196,7 +196,7 @@ pub fn start_impersonate() -> BrowserVoyageResult<HANDLE> {
             Err(e) => return Err(convert_windows_error(e)),
         }
     }
-    info!("Successfully started impersonation");
+    debug!("Successfully started impersonation");
     Ok(duplicated_token)
 }
 
@@ -213,7 +213,7 @@ pub fn stop_impersonate(duplicated_token: HANDLE) -> BrowserVoyageResult<()> {
             Err(e) => return Err(convert_windows_error(e)),
         }
     }
-    info!("Successfully stopped impersonation");
+    debug!("Successfully stopped impersonation");
     Ok(())
 }
 
