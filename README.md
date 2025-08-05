@@ -53,7 +53,7 @@ You can also add BrowserVoyage as a dependency to your Rust project.
 
 ```toml
 [dependencies]
-browservoyage = { git = "https://github.com/your-username/browservoyage" }
+browservoyage = { git = "https://github.com/hakaioffsec/browservoyage" }
 ```
 
 **Example:**
@@ -80,3 +80,4 @@ Contributions are welcome! If you'd like to help, please feel free to fork the r
 ## License
 
 This project is licensed under the GNU GPLv3 License.
+
