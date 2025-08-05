@@ -42,7 +42,7 @@ impl ChromeBrowserConfig {
             name: "Brave".to_string(),
             vendor: "Brave Software".to_string(),
             data_dir_name: "BraveSoftware/Brave-Browser".to_string(),
-            keychain_service: "Brave Browser Safe Storage".to_string(),
+            keychain_service: "Brave Safe Storage".to_string(),
         }
     }
 
