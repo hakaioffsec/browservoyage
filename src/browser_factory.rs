@@ -6,6 +6,7 @@ use crate::chrome::macos::MacOSChromeExtractor;
 #[cfg(target_os = "windows")]
 use crate::chrome::windows::WindowsChromeExtractor;
 use crate::error::BrowserVoyageResult;
+use crate::gecko::GeckoExtractor;
 #[cfg(target_os = "macos")]
 use crate::webkit::macos::SafariExtractor;
 
@@ -27,6 +28,11 @@ pub fn get_extractors() -> BrowserVoyageResult<Vec<Box<dyn BrowserExtractor>>> {
         extractors.push(Box::new(MacOSChromeExtractor::brave()));
         extractors.push(Box::new(MacOSChromeExtractor::chromium()));
         extractors.push(Box::new(SafariExtractor::new()));
+        
+        // Add Firefox extractors for macOS
+        for (name, path) in GeckoExtractor::find_firefox_installations() {
+            extractors.push(Box::new(GeckoExtractor::new(name, path)));
+        }
     }
 
     // #[cfg(target_os = "linux")]
