@@ -20,7 +20,7 @@ Works on **Windows**, **macOS**, and **Linux**.
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/your-username/browservoyage
+    git clone https://github.com/hakaioffsec/browservoyage
     cd browservoyage
     ```
 
@@ -80,4 +80,5 @@ Contributions are welcome! If you'd like to help, please feel free to fork the r
 ## License
 
 This project is licensed under the GNU GPLv3 License.
+
 
