@@ -145,7 +145,7 @@ impl DataUtils {
     /// Converts Chrome's timestamp format to Unix timestamp
     pub fn chrome_timestamp_to_unix(chrome_time: i64) -> i64 {
         // Chrome timestamps are microseconds since January 1, 1601
-        const EPOCH_DIFF_MICROSECONDS: i64 = 11644473600_000_000;
+        const EPOCH_DIFF_MICROSECONDS: i64 = 11_644_473_600_000_000;
         (chrome_time - EPOCH_DIFF_MICROSECONDS) / 1_000_000
     }
 
@@ -168,6 +168,6 @@ impl DatabaseOperations for DefaultDatabaseOps {
             | OpenFlags::SQLITE_OPEN_SHARED_CACHE;
 
         rusqlite::Connection::open_with_flags(path, flags)
-            .map_err(|e| crate::error::BrowserVoyageError::DatabaseError(e))
+            .map_err(crate::error::BrowserVoyageError::DatabaseError)
     }
 }

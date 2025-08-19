@@ -160,7 +160,7 @@ impl LinuxChromeExtractor {
             ])
             .output()
             .map_err(|e| {
-                BrowserVoyageError::Io(format!("Failed to execute kwallet-query: {}", e))
+                BrowserVoyageError::Io(format!("Failed to execute kwallet-query: {e}"))
             })?;
 
         if output.status.success() {
@@ -209,12 +209,12 @@ impl LinuxChromeExtractor {
 
             // Decrypt using AES-128-CBC
             let cipher = Aes128CbcDec::new_from_slices(&key, &iv).map_err(|e| {
-                BrowserVoyageError::DecryptionFailed(format!("AES init failed: {}", e))
+                BrowserVoyageError::DecryptionFailed(format!("AES init failed: {e}"))
             })?;
 
             let mut buf = encrypted_data.to_vec();
             let decrypted = cipher.decrypt_padded_mut::<Pkcs7>(&mut buf).map_err(|e| {
-                BrowserVoyageError::DecryptionFailed(format!("Decryption failed: {}", e))
+                BrowserVoyageError::DecryptionFailed(format!("Decryption failed: {e}"))
             })?;
 
             Ok(decrypted.to_vec())

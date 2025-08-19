@@ -203,7 +203,7 @@ impl MacOSChromeExtractor {
         let ciphertext = &encrypted_data[3..];
 
         // Check ciphertext length (must be multiple of block size for AES-CBC)
-        if ciphertext.len() % 16 != 0 {
+        if !ciphertext.len().is_multiple_of(16) {
             return Err(BrowserVoyageError::DecryptionFailed(format!(
                 "Invalid ciphertext length: {}. Must be a multiple of 16 bytes",
                 ciphertext.len()
@@ -235,8 +235,7 @@ impl MacOSChromeExtractor {
                         // Domain hash verification failed
                         debug!("Cookie domain verification failed for host: {}", host);
                         return Err(BrowserVoyageError::DecryptionFailed(format!(
-                            "Cookie domain hash verification failed for: {}",
-                            host
+                            "Cookie domain hash verification failed for: {host}"
                         )));
                     }
                 }
@@ -247,8 +246,7 @@ impl MacOSChromeExtractor {
             Err(e) => {
                 debug!("Failed to decrypt with AES-CBC: {:?}", e);
                 Err(BrowserVoyageError::DecryptionFailed(format!(
-                    "AES-CBC decryption failed: {:?}",
-                    e
+                    "AES-CBC decryption failed: {e:?}"
                 )))
             }
         }

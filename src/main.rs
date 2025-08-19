@@ -91,7 +91,7 @@ fn main() -> Result<()> {
 
                 // Format and save data
                 let formatter = get_formatter(&config.output_format);
-                let formatted_data = formatter.format(&[result.clone()])?;
+                let formatted_data = formatter.format(std::slice::from_ref(result))?;
                 fs::write(&output_path, formatted_data)?;
 
                 info!("  Saved data to: {}", output_path.display());

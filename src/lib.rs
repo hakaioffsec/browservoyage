@@ -10,12 +10,10 @@
 //! ```no_run
 //! use browservoyage::{extract_browser_data, ExtractionConfig};
 //!
-//! fn main() {
-//!     let config = ExtractionConfig::default();
-//!     match extract_browser_data(&config) {
-//!         Ok(data) => println!("Extracted data: {:?}", data),
-//!         Err(e) => eprintln!("Error: {}", e),
-//!     }
+//! let config = ExtractionConfig::default();
+//! match extract_browser_data(&config) {
+//!     Ok(data) => println!("Extracted data: {:?}", data),
+//!     Err(e) => eprintln!("Error: {}", e),
 //! }
 //! ```
 

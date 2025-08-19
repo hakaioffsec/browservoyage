@@ -19,6 +19,10 @@ pub fn get_extractors() -> BrowserVoyageResult<Vec<Box<dyn BrowserExtractor>>> {
         extractors.push(Box::new(WindowsChromeExtractor::edge()));
         extractors.push(Box::new(WindowsChromeExtractor::brave()));
         extractors.push(Box::new(WindowsChromeExtractor::chromium()));
+        // Add Firefox extractors for Windows
+        for (name, path) in GeckoExtractor::find_firefox_installations() {
+            extractors.push(Box::new(GeckoExtractor::new(name, path)));
+        }
     }
 
     #[cfg(target_os = "macos")]

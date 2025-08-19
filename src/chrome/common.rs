@@ -156,25 +156,22 @@ pub trait ChromeExtractorBase: BrowserExtractor {
         })?;
 
         let mut cookies = Vec::new();
-        for cookie_result in cookie_iter {
-            if let Ok(mut chrome_cookie) = cookie_result {
-                // If we have encrypted value and no plain value, try to decrypt
-                if chrome_cookie.value.is_none() && !chrome_cookie.encrypted_value.is_empty() {
-                    match self.decrypt_chrome_data(&chrome_cookie.encrypted_value) {
-                        Ok(decrypted) => {
-                            chrome_cookie.value =
-                                Some(String::from_utf8_lossy(&decrypted).to_string());
-                        }
-                        Err(e) => {
-                            warn!("Failed to decrypt cookie {}: {}", chrome_cookie.name, e);
-                            continue;
-                        }
+        for mut chrome_cookie in cookie_iter.flatten() {
+            // If we have encrypted value and no plain value, try to decrypt
+            if chrome_cookie.value.is_none() && !chrome_cookie.encrypted_value.is_empty() {
+                match self.decrypt_chrome_data(&chrome_cookie.encrypted_value) {
+                    Ok(decrypted) => {
+                        chrome_cookie.value = Some(String::from_utf8_lossy(&decrypted).to_string());
+                    }
+                    Err(e) => {
+                        warn!("Failed to decrypt cookie {}: {}", chrome_cookie.name, e);
+                        continue;
                     }
                 }
+            }
 
-                if chrome_cookie.value.is_some() {
-                    cookies.push(chrome_cookie.into());
-                }
+            if chrome_cookie.value.is_some() {
+                cookies.push(chrome_cookie.into());
             }
         }
 
@@ -212,21 +209,19 @@ pub trait ChromeExtractorBase: BrowserExtractor {
         })?;
 
         let mut credentials = Vec::new();
-        for cred_result in cred_iter {
-            if let Ok(mut chrome_cred) = cred_result {
-                // Decrypt password
-                if !chrome_cred.password_value.is_empty() {
-                    match self.decrypt_chrome_data(&chrome_cred.password_value) {
-                        Ok(decrypted) => {
-                            chrome_cred.password_value = decrypted;
-                            credentials.push(chrome_cred.into());
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to decrypt credential for {}: {}",
-                                chrome_cred.origin_url, e
-                            );
-                        }
+        for mut chrome_cred in cred_iter.flatten() {
+            // Decrypt password
+            if !chrome_cred.password_value.is_empty() {
+                match self.decrypt_chrome_data(&chrome_cred.password_value) {
+                    Ok(decrypted) => {
+                        chrome_cred.password_value = decrypted;
+                        credentials.push(chrome_cred.into());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to decrypt credential for {}: {}",
+                            chrome_cred.origin_url, e
+                        );
                     }
                 }
             }

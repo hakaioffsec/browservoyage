@@ -22,7 +22,7 @@ pub struct JsonFormatter;
 
 impl OutputFormatter for JsonFormatter {
     fn format(&self, data: &[ExtractedData]) -> BrowserVoyageResult<String> {
-        serde_json::to_string_pretty(data).map_err(|e| BrowserVoyageError::JsonError(e))
+        serde_json::to_string_pretty(data).map_err(BrowserVoyageError::JsonError)
     }
 
     fn file_extension(&self) -> &'static str {
@@ -123,7 +123,7 @@ impl OutputFormatter for CsvFormatter {
         }
         output.extend_from_slice(&credentials_output);
 
-        String::from_utf8(output).map_err(|e| BrowserVoyageError::Utf8Error(e))
+        String::from_utf8(output).map_err(BrowserVoyageError::Utf8Error)
     }
 
     fn file_extension(&self) -> &'static str {
