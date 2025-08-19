@@ -19,25 +19,12 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, instrument, warn};
-use windows::core::{w, PWSTR};
+use tracing::{debug, info, warn};
+use windows::core::w;
 use windows::Win32::Security::Cryptography::{
     CryptUnprotectData, NCryptDecrypt, NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider,
     CERT_KEY_SPEC, CRYPT_INTEGER_BLOB, NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
 };
-use windows::Win32::System::WindowsProgramming::GetUserNameW;
-
-fn get_current_user() -> String {
-    let mut buffer = [0u16; 257];
-    let mut size = buffer.len() as u32;
-    unsafe {
-        if GetUserNameW(Some(PWSTR(buffer.as_mut_ptr())), &mut size).is_ok() {
-            String::from_utf16_lossy(&buffer[..size as usize - 1])
-        } else {
-            "Unknown".to_string()
-        }
-    }
-}
 
 /// Optimized Windows Chrome extractor with extraction-level impersonation
 #[derive(Debug)]
@@ -176,7 +163,6 @@ impl WindowsChromeExtractor {
 
         let key_blob_encrypted = &key_blob_encrypted_with_prefix[4..];
         // Perform first decrypt under SYSTEM impersonation, then drop it for user decrypt
-        info!("Decrypting with SYSTEM DPAPI");
         let key_blob_system_decrypted = {
             let _guard = ImpersonationGuard::new()?;
             let result = self.dpapi_unprotect(key_blob_encrypted)?;
@@ -185,7 +171,6 @@ impl WindowsChromeExtractor {
             result
         };
 
-        info!("Decrypting with user DPAPI");
         let key_blob_user_decrypted = self.dpapi_unprotect(&key_blob_system_decrypted)?;
 
         let parsed_data = self.parse_key_blob(&key_blob_user_decrypted);
@@ -245,7 +230,6 @@ impl WindowsChromeExtractor {
 
         let encrypted_key_data = &key_with_prefix[5..];
 
-        info!("Decrypting {} key with user DPAPI only", self.config.name);
         let decrypted_content = self.dpapi_unprotect(encrypted_key_data)?;
 
         if decrypted_content.len() < 32 {
@@ -390,7 +374,6 @@ impl WindowsChromeExtractor {
     /// - Chrome: Uses AES-GCM with domain hash validation for cookies
     ///
     /// Gracefully handles binary cookie data by encoding as base64 when UTF-8 conversion fails.
-    #[instrument(skip(encrypted_value, master_key))]
     fn decrypt_chromium_value(
         &self,
         encrypted_value: &[u8],
@@ -446,9 +429,7 @@ impl WindowsChromeExtractor {
         // Special handling for Chrome cookies: validate the domain hash
         if let Some(host) = host_key {
             // Calculate SHA-256 hash of the domain
-            let mut hasher = Sha256::new();
-            hasher.update(host.as_bytes());
-            let computed_hash = hasher.finalize();
+            let computed_hash = Sha256::digest(host.as_bytes());
 
             // If the first 32 bytes match the domain hash, extract the actual cookie value
             if decrypted.len() >= 32 && computed_hash.as_slice() == &decrypted[..32] {
@@ -462,11 +443,6 @@ impl WindowsChromeExtractor {
 
     /// DPAPI decrypt
     fn dpapi_unprotect(&self, data: &[u8]) -> BrowserVoyageResult<Vec<u8>> {
-        info!(
-            "Decrypting {} bytes with DPAPI for user: {}",
-            data.len(),
-            get_current_user()
-        );
         unsafe {
             let data_in = CRYPT_INTEGER_BLOB {
                 cbData: data.len() as u32,
@@ -493,7 +469,6 @@ impl WindowsChromeExtractor {
         }
     }
 
-    #[instrument(skip(blob_data))]
     fn parse_key_blob(&self, blob_data: &[u8]) -> BrowserVoyageResult<ParsedKeyBlob> {
         let mut cursor = 0;
 
@@ -579,7 +554,6 @@ impl WindowsChromeExtractor {
         Ok(parsed)
     }
 
-    #[instrument(skip(input_data))]
     fn decrypt_with_cng(&self, input_data: &[u8]) -> BrowserVoyageResult<Vec<u8>> {
         unsafe {
             let mut h_provider = NCRYPT_PROV_HANDLE::default();
@@ -641,7 +615,6 @@ impl WindowsChromeExtractor {
         ba1.iter().zip(ba2.iter()).map(|(a, b)| a ^ b).collect()
     }
 
-    #[instrument(skip(parsed_data))]
     fn derive_v20_master_key(&self, parsed_data: &ParsedKeyBlob) -> BrowserVoyageResult<Vec<u8>> {
         match parsed_data.flag {
             1 => {
@@ -710,7 +683,6 @@ impl WindowsChromeExtractor {
         }
     }
 
-    #[instrument(skip(profile_path))]
     fn extract_cookies(
         &self,
         master_key: &[u8],
@@ -813,7 +785,6 @@ impl WindowsChromeExtractor {
         Ok(extracted_cookies)
     }
 
-    #[instrument(skip(master_key, profile_path))]
     fn extract_credentials(
         &self,
         master_key: &[u8],
