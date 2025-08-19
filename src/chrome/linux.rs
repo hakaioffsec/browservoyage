@@ -45,6 +45,11 @@ impl LinuxChromeExtractor {
         Self::new(ChromeBrowserConfig::chromium())
     }
 
+    /// Create a new Microsoft Edge extractor
+    pub fn edge() -> Self {
+        Self::new(ChromeBrowserConfig::edge())
+    }
+
     /// Create a new extractor with custom config
     fn new(config: ChromeBrowserConfig) -> Self {
         let user_data_path = Self::get_user_data_path_for_config(&config)
@@ -61,6 +66,7 @@ impl LinuxChromeExtractor {
         let home_dir = PlatformUtils::get_home_dir()?;
         let path_str = match config.name.as_str() {
             "Chrome" => ".config/google-chrome",
+            "Edge" => ".config/microsoft-edge",
             "Brave" => ".config/BraveSoftware/Brave-Browser",
             "Chromium" => ".config/chromium",
             _ => return None,
@@ -283,6 +289,6 @@ mod tests {
         let extractor = LinuxChromeExtractor::chrome();
         let mode = extractor.detect_encryption_mode();
         // This will vary based on the system, but should not panic
-        println!("Detected encryption mode: {:?}", mode);
+        println!("Detected encryption mode: {mode:?}");
     }
 }

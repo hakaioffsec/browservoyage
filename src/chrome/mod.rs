@@ -1,6 +1,7 @@
 pub mod common;
 pub mod linux;
 pub mod macos;
+#[cfg(target_os = "windows")]
 pub mod windows;
 // #[cfg(target_os = "linux")]
 // pub use self::linux_v2::ModernLinuxChromeExtractor as ChromeExtractor;

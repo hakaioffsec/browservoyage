@@ -45,6 +45,11 @@ pub fn get_extractors() -> BrowserVoyageResult<Vec<Box<dyn BrowserExtractor>>> {
         extractors.push(Box::new(LinuxChromeExtractor::edge()));
         extractors.push(Box::new(LinuxChromeExtractor::brave()));
         extractors.push(Box::new(LinuxChromeExtractor::chromium()));
+
+        // Add Firefox extractors for Linux
+        for (name, path) in GeckoExtractor::find_firefox_installations() {
+            extractors.push(Box::new(GeckoExtractor::new(name, path)));
+        }
     }
 
     Ok(extractors)

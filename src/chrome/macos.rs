@@ -412,6 +412,6 @@ mod tests {
         let config = ChromeBrowserConfig::chrome();
         let path = MacOSChromeExtractor::get_user_data_path_for_config(&config);
         // This will vary based on the system, but should not panic
-        println!("Chrome path: {:?}", path);
+        println!("Chrome path: {path:?}");
     }
 }
